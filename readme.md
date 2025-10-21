@@ -1,5 +1,5 @@
 # Real-time EEG Attention State Analysis System
-
+This is a simple demo to show how eeg refect our Attention State.
 
 ## Implemented Features
 

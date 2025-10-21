@@ -66,7 +66,7 @@ class EEGProcessor:
         """
         try:
             # Load EDF file using MNE
-            raw = mne.io.read_raw_edf(file_path, preload=True, verbose=False)
+            raw = mne.io.read_raw_edf(file_path, preload=True, verbose=False, encoding='latin1')
             self.raw_data = raw
             self.channels = raw.ch_names
             
@@ -492,8 +492,8 @@ class EEGProcessor:
             callback_func: Callback function
         """
         while self.is_running:
-            # Generate 2 seconds of simulated signal
-            signal_data = self.generate_simulated_signal(2.0)
+            # Generate 5 seconds of simulated signal
+            signal_data = self.generate_simulated_signal(5.0)
             
             # Call callback function to pass data
             if callback_func:

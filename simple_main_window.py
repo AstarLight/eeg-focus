@@ -93,7 +93,7 @@ class CombinedSignalWidget(QWidget):
         layout = QVBoxLayout()
         
         # Initialize data and color definitions
-        self.time_data = np.linspace(0, 2, 500)
+        self.time_data = np.linspace(0, 5, 1250)  # 5 seconds window with 1250 points
         self.lines = {}
         self.visible_signals = {}
         
@@ -140,9 +140,8 @@ class CombinedSignalWidget(QWidget):
         self._init_lines()
         
         self._update_line_visibility()
-        self.ax.set_xlim(0, 2)
+        self.ax.set_xlim(0, 5)  # 5 seconds window
         self.ax.set_ylim(-200, 200)  # Adjusted to microvolt level range
-        self.ax.legend(loc='upper right')
         
     def create_control_panel(self):
         """Create control panel"""
@@ -215,6 +214,28 @@ class CombinedSignalWidget(QWidget):
         for name, line in self.lines.items():
             visible = self.visible_signals.get(name, False)
             line.set_visible(visible)
+        
+        # Update legend to show only visible lines
+        self._update_legend()
+    
+    def _update_legend(self):
+        """Update legend to show only visible lines with proper line samples"""
+        # Get visible lines and their labels
+        visible_lines = []
+        visible_labels = []
+        
+        for name, line in self.lines.items():
+            if line.get_visible():
+                visible_lines.append(line)
+                visible_labels.append(name)
+        
+        # Remove old legend if exists
+        if self.ax.get_legend():
+            self.ax.get_legend().remove()
+        
+        # Create new legend with visible lines only
+        if visible_lines:
+            self.ax.legend(visible_lines, visible_labels, loc='upper right')
     
     def update_signals(self, original_data=None, band_data=None):
         """Update signal display"""
@@ -260,6 +281,9 @@ class CombinedSignalWidget(QWidget):
         else:
             self.ax.set_ylim(-200, 200)  # Adjusted to microvolt level range
         
+        # Update legend
+        self._update_legend()
+        
         # Force redraw
         self.figure.canvas.draw()
         self.figure.canvas.flush_events()
@@ -281,7 +305,10 @@ class AttentionTrendWidget(QWidget):
         
         # Historical data
         self.score_history = []
-        self.max_history = 100
+        self.time_history = []  # Store time points for each score
+        self.max_history = 72000  # Store up to 2 hour of history (72000 points at 100ms interval)
+        self.update_interval = 100  # Default update interval in ms
+        self.current_time = 0  # Current accumulated time
     
     def init_ui(self):
         """Initialize UI"""
@@ -289,41 +316,75 @@ class AttentionTrendWidget(QWidget):
         
         # Trend plot
         self.trend_plot = MatplotlibPlotWidget(
-            title="Attention Score Trend",
+            title="Attention Score Trend (Full History)",
             ylabel="Score",
-            xlabel="Time"
+            xlabel="Elapsed Time (s)"
         )
         self.trend_plot.ax.set_ylim(0, 100)
         self.trend_plot.ax.set_facecolor('white')
         self.trend_plot.figure.patch.set_facecolor('white')
+        
+        # Format X-axis to show time clearly
+        self.trend_plot.ax.grid(True, alpha=0.3, which='both')
         
         layout.addWidget(self.trend_plot)
         self.setLayout(layout)
     
     def update_trend(self, score):
         """Update trend plot"""
+        # Accumulate time
+        time_increment = self.update_interval / 1000.0  # Convert ms to seconds
+        self.current_time += time_increment
+        
+        # Store score and corresponding time
         self.score_history.append(score)
+        self.time_history.append(self.current_time)
+        
+        # Keep only recent history to prevent memory issues
         if len(self.score_history) > self.max_history:
             self.score_history.pop(0)
+            self.time_history.pop(0)
         
         if len(self.score_history) > 1:
-            x_data = np.arange(len(self.score_history))
-            self.trend_plot.line.set_data(x_data, self.score_history)
+            # Use stored time history for X-axis data
+            x_data = np.array(self.time_history)
+            y_data = np.array(self.score_history)
+            self.trend_plot.line.set_data(x_data, y_data)
             
-            # Adjust X-axis range
-            if len(self.score_history) > 50:
-                self.trend_plot.ax.set_xlim(len(self.score_history) - 50, 
-                                          len(self.score_history))
+            # Always show full history from 0 to current time
+            # Use the actual first time point instead of 0 (in case old data was removed)
+            x_min = self.time_history[0] if self.time_history else 0
+            x_max = max(self.current_time, x_min + 5)  # At least 5 seconds range
+            self.trend_plot.ax.set_xlim(x_min, x_max)
+            
+            # Update X-axis label with current time info
+            if self.current_time >= 60:
+                # Show minutes when time exceeds 60 seconds
+                minutes = int(self.current_time // 60)
+                seconds = int(self.current_time % 60)
+                data_points = len(self.score_history)
+                self.trend_plot.ax.set_xlabel(f"Elapsed Time (s) - Total: {minutes}m {seconds}s ({data_points} points)")
             else:
-                self.trend_plot.ax.set_xlim(0, max(50, len(self.score_history)))
+                data_points = len(self.score_history)
+                self.trend_plot.ax.set_xlabel(f"Elapsed Time (s) - Total: {self.current_time:.1f}s ({data_points} points)")
             
             self.trend_plot.canvas.draw()
+    
+    def set_update_interval(self, interval_ms):
+        """Set update interval in milliseconds"""
+        self.update_interval = interval_ms
     
     def clear_trend(self):
         """Clear trend plot"""
         self.score_history.clear()
+        self.time_history.clear()
         self.trend_plot.line.set_data([], [])
-        self.trend_plot.ax.set_xlim(0, 50)
+        # Reset accumulated time
+        self.current_time = 0
+        # Reset X-axis
+        self.trend_plot.ax.set_xlim(0, 5)
+        # Reset X-axis label
+        self.trend_plot.ax.set_xlabel("Elapsed Time (s)")
         self.trend_plot.canvas.draw()
 
 
@@ -397,7 +458,7 @@ class SimpleMainWindow(QMainWindow):
         
         # Add to main layout
         main_layout.addWidget(control_panel, 1)
-        main_layout.addWidget(display_area, 3)
+        main_layout.addWidget(display_area, 7)
         
         central_widget.setLayout(main_layout)
     
@@ -559,6 +620,9 @@ class SimpleMainWindow(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_display)
         self.update_interval = 100  # Default 100ms
+        
+        # Initialize trend widget's update interval
+        self.trend_widget.set_update_interval(self.update_interval)
     
     def load_edf_file(self):
         """Load EDF file"""
@@ -683,7 +747,7 @@ class SimpleMainWindow(QMainWindow):
             data = self.eeg_processor.get_channel_data(
                 self.current_channel, 
                 self.file_position, 
-                2.0  # 2 seconds of data
+                5.0  # 5 seconds of data
             )
             
             if len(data) > 0:
@@ -692,7 +756,7 @@ class SimpleMainWindow(QMainWindow):
                 
                 # Check if reached end of file
                 max_time = self.eeg_processor.current_data.shape[1] / self.eeg_processor.sample_rate
-                if self.file_position + 2.0 > max_time:
+                if self.file_position + 5.0 > max_time:
                     self.file_position = 0  # Loop playback
                 
                 self.process_and_display(data)
@@ -742,6 +806,9 @@ class SimpleMainWindow(QMainWindow):
         """Update display speed"""
         self.update_interval = value
         self.speed_label.setText(f"{value}ms")
+        
+        # Update trend widget's update interval
+        self.trend_widget.set_update_interval(value)
         
         if self.timer.isActive():
             self.timer.stop()
