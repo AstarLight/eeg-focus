@@ -22,6 +22,8 @@
 8. ✅ **Trend Analysis Plot** - Historical attention score change trend
 9. ✅ **Interactive Controls** - File loading, channel selection, speed adjustment, etc.
 
+![systen GUI](./gui.png)
+
 ## Technical Architecture
 
 ### File Structure
@@ -30,10 +32,8 @@ eeg-focus/
 ├── simple_main.py             # Simplified version main program entry
 ├── simple_main_window.py      # Simplified version GUI interface (requires only matplotlib)
 ├── eeg_processor.py           # EEG signal processing core module
-├── test_attention_modes.py    # Test script for comparing all calculation modes
 ├── requirements.txt           # Project dependency list
 ├── README.md                  # Main project documentation
-├── ATTENTION_MODES_GUIDE.md   # Detailed guide for attention calculation modes
 └── Subject01_1.edf           # Test EDF file
 ```
 
@@ -71,13 +71,12 @@ The system now supports **4 different attention scoring methods**, each with uni
 - Most robust and reliable
 - Recommended for most applications
 
-👉 **See [ATTENTION_MODES_GUIDE.md](ATTENTION_MODES_GUIDE.md) for detailed explanations and usage tips**
 
 ### Algorithm Principles
 Based on the relationship between different EEG frequency bands and cognitive states in neuroscience research:
 
 #### Frequency Band Weight Design
-1. **Beta Waves (13-30Hz)** - Weight **+0.4**
+1. **Beta Waves (13-30Hz)** - Weight **+0.6**
    - Positively correlated with attention focus and alertness
    - High Beta activity indicates active cognitive state
 
@@ -130,60 +129,3 @@ In the GUI, find the **"Calculation Mode"** dropdown in the control panel:
    - Combined Method
 2. The attention score updates immediately when you switch modes
 3. Try different modes to see which works best for your data
-
-### Testing All Modes
-
-To compare all calculation modes on your data:
-
-```bash
-python test_attention_modes.py
-```
-
-This will display attention scores calculated with all 4 methods side by side.
-
-### Programmatic Usage
-
-```python
-from eeg_processor import EEGProcessor
-
-processor = EEGProcessor(sample_rate=250)
-processor.load_edf_file('your_file.edf')
-
-# Set calculation mode
-processor.set_attention_mode('combined')  # or 'relative', 'log', 'ratio'
-
-# Get data and calculate score
-data = processor.get_channel_data('Fp1', start_time=0, duration=2)
-score = processor.calculate_attention_score(data)
-
-print(f"Attention Score: {score:.2f}/100")
-```
-
-## What's New in v2.0
-
-### ✨ Major Improvements
-
-1. **Fixed Band Power Calculation** 
-   - Changed from RMS (time domain) to proper PSD calculation using Welch's method
-   - Now correctly computes frequency band power in μV²
-
-2. **4 Calculation Modes**
-   - Relative Power Method (original, with corrected range)
-   - Logarithmic Power Method (preserves intensity)
-   - Beta/Theta Ratio Method (classic neuroscience approach)
-   - Combined Method (most robust)
-
-3. **Real-time Mode Switching**
-   - New dropdown in GUI for instant mode changes
-   - No need to restart the application
-
-4. **Better Score Mapping**
-   - Corrected theoretical range from [-0.4, 0.6] to [-0.3, 0.4]
-   - Improved sigmoid functions for smooth mapping
-   - More accurate score representation
-
-5. **Comprehensive Documentation**
-   - New ATTENTION_MODES_GUIDE.md with detailed explanations
-   - Testing script for validation
-   - Updated technical documentation
-

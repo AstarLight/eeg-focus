@@ -171,12 +171,12 @@ class CombinedSignalWidget(QWidget):
         # Add select all/deselect all buttons
         self.select_all_btn = QPushButton("Select All")
         self.select_all_btn.clicked.connect(self.select_all)
-        self.select_all_btn.setMaximumWidth(80)
+        self.select_all_btn.setMaximumWidth(240)
         layout.addWidget(self.select_all_btn)
         
         self.deselect_all_btn = QPushButton("Deselect All")
         self.deselect_all_btn.clicked.connect(self.deselect_all)
-        self.deselect_all_btn.setMaximumWidth(100)
+        self.deselect_all_btn.setMaximumWidth(240)
         layout.addWidget(self.deselect_all_btn)
         
         panel.setLayout(layout)
