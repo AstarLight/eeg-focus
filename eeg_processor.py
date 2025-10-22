@@ -52,7 +52,15 @@ class EEGProcessor:
         # 'log': Logarithmic power method
         # 'ratio': Beta/Theta ratio method
         # 'combined': Combined method
+        # 'frontal_selective': Frontal Beta + Non-frontal Alpha method (based on selective attention physiology)
         self.attention_mode = 'relative'
+        
+        # Define brain regions for frontal_selective mode
+        # Frontal regions (task-relevant): Beta increase indicates focused attention
+        self.frontal_channels = ['Fp1', 'Fp2', 'F3', 'F4', 'F7', 'F8', 'Fz']
+        # Non-frontal regions (task-irrelevant): Alpha increase indicates selective inhibition
+        # Converge to parietal-occipital sites for selective inhibition robustness
+        self.non_frontal_channels = ['P3', 'P4', 'Pz', 'O1', 'O2']
     
     def load_edf_file(self, file_path: str) -> bool:
         """
@@ -221,9 +229,10 @@ class EEGProcessor:
         low_freq, high_freq = self.frequency_bands[band_name]
         
         # Use Welch's method to calculate power spectral density (PSD)
-        # nperseg: Length of each segment, typically 1-4 seconds
-        nperseg = min(len(data), int(1 * self.sample_rate))
-        freqs, psd = signal.welch(data, fs=self.sample_rate, nperseg=nperseg)
+        # nperseg: Prefer 2-second windows for stable Alpha/Beta estimates; 50% overlap
+        nperseg = min(len(data), int(2 * self.sample_rate))
+        noverlap = max(0, nperseg // 2)
+        freqs, psd = signal.welch(data, fs=self.sample_rate, nperseg=nperseg, noverlap=noverlap)
         
         # Find indices corresponding to frequency band
         idx_band = np.logical_and(freqs >= low_freq, freqs <= high_freq)
@@ -240,12 +249,12 @@ class EEGProcessor:
         Set attention score calculation mode
         
         Args:
-            mode: Calculation mode - 'relative', 'log', 'ratio', or 'combined'
+            mode: Calculation mode - 'relative', 'log', 'ratio', 'combined', or 'frontal_selective'
         
         Returns:
             bool: True if successfully set, False if invalid mode
         """
-        valid_modes = ['relative', 'log', 'ratio', 'combined']
+        valid_modes = ['relative', 'log', 'ratio', 'combined', 'frontal_selective']
         if mode not in valid_modes:
             print(f"Error: Invalid mode '{mode}'. Valid modes: {valid_modes}")
             return False
@@ -258,7 +267,8 @@ class EEGProcessor:
         """Get current attention calculation mode"""
         return self.attention_mode
     
-    def calculate_attention_score(self, data: np.ndarray) -> float:
+    def calculate_attention_score(self, data: np.ndarray, channel_name: Optional[str] = None, 
+                                  start_time: Optional[float] = None, duration: float = 2.0) -> float:
         """
         Calculate attention score using selected mode
         
@@ -267,9 +277,13 @@ class EEGProcessor:
         - 'log': Logarithmic power method
         - 'ratio': Beta/Theta ratio method (classic neuroscience indicator)
         - 'combined': Combined method using all approaches
+        - 'frontal_selective': Frontal Beta + Non-frontal Alpha (selective attention physiology)
         
         Args:
-            data: Input signal
+            data: Input signal (single channel for most modes, or all channels for frontal_selective)
+            channel_name: Channel name (required for frontal_selective mode)
+            start_time: Start time for analysis (required for frontal_selective mode in file playback)
+            duration: Duration for analysis (default 2.0 seconds)
             
         Returns:
             float: Attention score (0-100)
@@ -277,7 +291,14 @@ class EEGProcessor:
         if len(data) == 0:
             return 0.0
         
-        # Calculate power of each frequency band
+        # For frontal_selective mode, use multi-channel analysis
+        if self.attention_mode == 'frontal_selective':
+            # Use provided start_time if available, otherwise use 0
+            if start_time is None:
+                start_time = 0.0
+            return self._calculate_score_frontal_selective(start_time=start_time, duration=duration)
+        
+        # Calculate power of each frequency band for single channel
         band_powers = {}
         for band_name in self.frequency_bands.keys():
             power = self.calculate_band_power(data, band_name)
@@ -430,6 +451,134 @@ class EEGProcessor:
         combined_score = max(0, min(100, combined_score))
         
         return combined_score
+    
+    def _calculate_score_frontal_selective(self, start_time: float = 0, duration: float = 2) -> float:
+        """
+        Method 5: Frontal Beta + Non-frontal Alpha method
+        Based on selective attention physiology:
+        - Task-relevant regions (frontal): Beta increase indicates focused processing
+        - Task-irrelevant regions (non-frontal): Alpha increase indicates selective inhibition
+        
+        Args:
+            start_time: Start time for analysis (seconds)
+            duration: Duration for analysis (seconds)
+            
+        Returns:
+            float: Attention score (0-100)
+        """
+        if self.current_data is None or self.channels is None:
+            return 0.0
+        
+        epsilon = 1e-10
+        
+        # Helper: robust z-score using median and MAD
+        def robust_z(values: np.ndarray) -> np.ndarray:
+            if len(values) == 0:
+                return np.array([])
+            med = np.median(values)
+            mad = np.median(np.abs(values - med))
+            scale = (mad * 1.4826) + 1e-12
+            return (values - med) / scale
+        
+        # Collect per-channel relative powers
+        frontal_beta_rel = []
+        frontal_alpha_rel = []
+        frontal_gamma_rel = []
+        post_alpha_rel = []
+        theta_rel_all = []
+        
+        for channel in self.channels:
+            clean_name = channel.replace('EEG ', '').strip()
+            channel_data = self.get_channel_data(channel, start_time, duration)
+            if len(channel_data) == 0:
+                continue
+            # Band powers
+            delta_p = self.calculate_band_power(channel_data, 'Delta')
+            theta_p = self.calculate_band_power(channel_data, 'Theta')
+            alpha_p = self.calculate_band_power(channel_data, 'Alpha')
+            beta_p = self.calculate_band_power(channel_data, 'Beta')
+            gamma_p = self.calculate_band_power(channel_data, 'Gamma')
+            total_p = max(delta_p + theta_p + alpha_p + beta_p + gamma_p, epsilon)
+            # Relative powers
+            delta_rel = delta_p / total_p
+            theta_rel = theta_p / total_p
+            alpha_rel = alpha_p / total_p
+            beta_rel = beta_p / total_p
+            gamma_rel = gamma_p / total_p
+            theta_rel_all.append(theta_rel)
+            if clean_name in self.frontal_channels:
+                frontal_beta_rel.append(beta_rel)
+                frontal_alpha_rel.append(alpha_rel)
+                frontal_gamma_rel.append(gamma_rel)
+            if clean_name in self.non_frontal_channels:
+                post_alpha_rel.append(alpha_rel)
+        
+        # Data sufficiency checks
+        if len(frontal_beta_rel) == 0 or len(post_alpha_rel) == 0:
+            return 0.0
+        
+        # Step 1: group robust medians on raw relative powers
+        beta_frontal_med = float(np.median(frontal_beta_rel)) if len(frontal_beta_rel) > 0 else 0.0
+        alpha_frontal_med = float(np.median(frontal_alpha_rel)) if len(frontal_alpha_rel) > 0 else 0.0
+        alpha_post_med = float(np.median(post_alpha_rel)) if len(post_alpha_rel) > 0 else 0.0
+        theta_global_med = float(np.median(theta_rel_all)) if len(theta_rel_all) > 0 else 0.0
+
+        # Step 2: build global reference distributions across all channels (relative powers)
+        # Use all-channel vectors for robust z computation
+        # If some arrays are empty (unlikely for theta_rel_all), fallback to small epsilon
+        all_beta_rel = []
+        all_alpha_rel = []
+        for channel in self.channels:
+            clean_name = channel.replace('EEG ', '').strip()
+            data_ch = self.get_channel_data(channel, start_time, duration)
+            if len(data_ch) == 0:
+                continue
+            d = self.calculate_band_power(data_ch, 'Delta')
+            t = self.calculate_band_power(data_ch, 'Theta')
+            a = self.calculate_band_power(data_ch, 'Alpha')
+            b = self.calculate_band_power(data_ch, 'Beta')
+            g = self.calculate_band_power(data_ch, 'Gamma')
+            tot = max(d + t + a + b + g, epsilon)
+            all_beta_rel.append(b / tot)
+            all_alpha_rel.append(a / tot)
+        all_beta_rel = np.array(all_beta_rel) if len(all_beta_rel) > 0 else np.array([epsilon])
+        all_alpha_rel = np.array(all_alpha_rel) if len(all_alpha_rel) > 0 else np.array([epsilon])
+        all_theta_rel = np.array(theta_rel_all) if len(theta_rel_all) > 0 else np.array([epsilon])
+
+        # Step 3: compute robust z of group medians against global distributions
+        def robust_z_scalar(x: float, ref: np.ndarray) -> float:
+            med = np.median(ref)
+            mad = np.median(np.abs(ref - med))
+            scale = (mad * 1.4826) + 1e-12
+            return float((x - med) / scale)
+
+        z_beta_frontal_med = robust_z_scalar(beta_frontal_med, all_beta_rel)
+        z_alpha_frontal_med = robust_z_scalar(alpha_frontal_med, all_alpha_rel)
+        z_alpha_post_med = robust_z_scalar(alpha_post_med, all_alpha_rel)  # 与同一Alpha参考对比
+        z_theta_global_med = robust_z_scalar(theta_global_med, all_theta_rel)
+        
+        # Selective inhibition: posterior alpha high minus frontal alpha contribution
+        selective_alpha = z_alpha_post_med - 0.5 * z_alpha_frontal_med
+        
+        # Light artifact guard: penalize high frontal gamma (EMG)
+        frontal_gamma_rel_med = float(np.median(frontal_gamma_rel)) if len(frontal_gamma_rel) > 0 else 0.0
+        # Penalty ramps from 1.0 (<=0.15) down to 0.5 (>=0.35)
+        if frontal_gamma_rel_med <= 0.15:
+            emg_penalty = 1.0
+        elif frontal_gamma_rel_med >= 0.35:
+            emg_penalty = 0.5
+        else:
+            ratio = (frontal_gamma_rel_med - 0.15) / (0.35 - 0.15)
+            emg_penalty = 1.0 - 0.5 * ratio
+        
+        # Combine indicators
+        raw_score = 0.7 * emg_penalty * z_beta_frontal_med + 0.3 * selective_alpha - 0.4 * z_theta_global_med
+        
+        # Map to 0-100 using sigmoid centered at 0
+        slope = 1.5
+        score_0_100 = 100.0 / (1.0 + np.exp(-slope * raw_score))
+        score_0_100 = max(0.0, min(100.0, float(score_0_100)))
+        return score_0_100
     
     def generate_simulated_signal(self, duration: float = 2.0) -> np.ndarray:
         """

@@ -7,7 +7,7 @@ This is a simple demo to show how eeg refect our Attention State.
 1. ✅ **EEG Signal Processing** - Professional EEG signal processing using MNE library and Welch's method for PSD
 2. ✅ **Multi-source Signal Support** - Support for EDF file loading and simulated real-time signal generation
 3. ✅ **Frequency Band Analysis** - Real-time decomposition of Delta, Theta, Alpha, Beta, and Gamma bands
-4. ✅ **Multiple Attention Scoring Modes** - 4 different calculation methods based on neuroscience research
+4. ✅ **Multiple Attention Scoring Modes** - 5 different calculation methods based on neuroscience research
 5. ✅ **Real-time Mode Switching** - Switch between calculation modes on-the-fly in GUI
 6. ✅ **Real-time Visualization** - Dynamic display of waveforms, frequency bands, and attention trends
 
@@ -18,9 +18,10 @@ This is a simple demo to show how eeg refect our Attention State.
 4. ✅ **Select All/Deselect All** - One-click control of all signal display states
 5. ✅ **Color Coding** - Different signals use different colors for easy identification
 6. ✅ **Attention Score Display** - Large font display of score and status description
-7. ✅ **Calculation Mode Selector** - Dropdown menu to switch between 4 attention calculation methods in real-time
-8. ✅ **Trend Analysis Plot** - Historical attention score change trend
-9. ✅ **Interactive Controls** - File loading, channel selection, speed adjustment, etc.
+7. ✅ **Calculation Mode Selector** - Dropdown menu to switch between 5 attention calculation methods in real-time
+8. ✅ **Smart Electrode Management** - Automatic electrode selection/deselection based on calculation mode
+9. ✅ **Trend Analysis Plot** - Historical attention score change trend
+10. ✅ **Interactive Controls** - File loading, channel selection, speed adjustment, etc.
 
 ![systen GUI](./gui.png)
 
@@ -49,7 +50,7 @@ eeg-focus/
 
 ### 🆕 Multiple Calculation Modes
 
-The system now supports **4 different attention scoring methods**, each with unique advantages:
+The system now supports **5 different attention scoring methods**, each with unique advantages:
 
 #### 1. **Relative Power Method** (Default)
 - Uses normalized frequency band power ratios
@@ -66,10 +67,24 @@ The system now supports **4 different attention scoring methods**, each with uni
 - Based on Beta/(Alpha+Theta) ratio
 - Well-validated in research literature
 
-#### 4. **Combined Method** (Recommended)
+#### 4. **Combined Method**
 - Integrates all three approaches (40% relative, 30% log, 30% ratio)
 - Most robust and reliable
 - Recommended for most applications
+
+#### 5. **Frontal-Selective Method** (Physiological) 🆕
+- Based on selective attention physiology
+- **Task-relevant regions (Frontal)**: Beta increase indicates focused cognitive processing
+  - Channels: Fp1, Fp2, F3, F4, F7, F8, Fz
+- **Task-irrelevant regions (Non-frontal)**: Alpha increase indicates selective inhibition
+  - Channels: P3, P4, Pz, O1, O2
+- Combines: 60% frontal Beta + 40% non-frontal Alpha
+- Best for understanding attention mechanisms
+- **Uses all EEG channels for comprehensive analysis**
+- **🔧 Smart electrode selection**: Channel selection is automatically disabled when using this mode
+  - Electrodes are pre-configured based on physiological regions
+  - No manual channel selection needed
+  - Automatically switches back to manual selection when switching to other modes
 
 
 ### Algorithm Principles
@@ -122,10 +137,16 @@ python simple_main.py
 ### Switching Attention Calculation Modes
 
 In the GUI, find the **"Calculation Mode"** dropdown in the control panel:
-1. Select from 4 available modes:
+1. Select from 5 available modes:
    - Relative Power (default)
    - Logarithmic Power
    - Beta/Theta Ratio
    - Combined Method
+   - Frontal-Selective (Physiological) - NEW!
 2. The attention score updates immediately when you switch modes
 3. Try different modes to see which works best for your data
+4. **Note for Frontal-Selective mode**:
+   - The channel selection dropdown will be automatically disabled
+   - Electrodes are pre-configured: frontal (Fp1, Fp2, F3, F4, F7, F8, Fz) and posterior (P3, P4, Pz, O1, O2)
+   - This mode analyzes all EEG channels simultaneously for a comprehensive physiological assessment
+   - When you switch back to other modes, channel selection will be re-enabled automatically

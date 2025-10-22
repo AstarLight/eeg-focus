@@ -549,7 +549,8 @@ class SimpleMainWindow(QMainWindow):
             "Relative Power",
             "Logarithmic Power",
             "Beta/Theta Ratio",
-            "Combined Method"
+            "Combined Method",
+            "Frontal-Selective (Physiological)"
         ])
         self.mode_combo.setCurrentIndex(0)  # Default: Relative Power
         self.mode_combo.currentIndexChanged.connect(self.change_attention_mode)
@@ -655,26 +656,47 @@ class SimpleMainWindow(QMainWindow):
     def change_attention_mode(self, index):
         """Change attention calculation mode"""
         mode_map = {
-            0: 'relative',      # Relative Power
-            1: 'log',           # Logarithmic Power
-            2: 'ratio',         # Beta/Theta Ratio
-            3: 'combined'       # Combined Method
+            0: 'relative',          # Relative Power
+            1: 'log',               # Logarithmic Power
+            2: 'ratio',             # Beta/Theta Ratio
+            3: 'combined',          # Combined Method
+            4: 'frontal_selective'  # Frontal-Selective (Physiological)
         }
         
         mode_names = {
             0: 'Relative Power',
             1: 'Logarithmic Power',
             2: 'Beta/Theta Ratio',
-            3: 'Combined Method'
+            3: 'Combined Method',
+            4: 'Frontal-Selective (Physiological)'
         }
         
         mode = mode_map.get(index, 'relative')
         self.eeg_processor.set_attention_mode(mode)
-        self.add_info_message(f"Switched to {mode_names[index]} mode")
+        
+        # 在 frontal_selective 模式下禁用电极选择，因为电极是自动选择的
+        if index == 4:  # Frontal-Selective mode
+            self.channel_combo.setEnabled(False)
+            # 保存当前选择的通道
+            if not hasattr(self, '_saved_channel'):
+                self._saved_channel = self.channel_combo.currentText()
+            # 设置默认提示
+            if self.channel_combo.count() > 0:
+                self.channel_combo.setCurrentIndex(0)
+            self.add_info_message(f"Switched to {mode_names[index]} mode (auto-select electrodes)")
+        else:
+            self.channel_combo.setEnabled(True)
+            # 恢复之前保存的通道选择
+            if hasattr(self, '_saved_channel') and self._saved_channel:
+                idx = self.channel_combo.findText(self._saved_channel)
+                if idx >= 0:
+                    self.channel_combo.setCurrentIndex(idx)
+            self.add_info_message(f"Switched to {mode_names[index]} mode")
     
     def start_file_mode(self):
         """Start file mode"""
-        if not self.current_channel:
+        # 在 frontal_selective 模式下不需要选择单个通道
+        if not self.current_channel and self.eeg_processor.get_attention_mode() != 'frontal_selective':
             self.add_info_message("Please select a channel first", "warning")
             return
         
@@ -757,9 +779,17 @@ class SimpleMainWindow(QMainWindow):
                 # Check if reached end of file
                 max_time = self.eeg_processor.current_data.shape[1] / self.eeg_processor.sample_rate
                 if self.file_position + 5.0 > max_time:
-                    self.file_position = 0  # Loop playback
+                    # Stop analysis when file ends instead of looping
+                    self.add_info_message("File playback completed, analysis stopped")
+                    self.stop_analysis()
+                    return
                 
                 self.process_and_display(data)
+            else:
+                # No data available, stop analysis
+                self.add_info_message("No data available, stopping analysis", "warning")
+                self.stop_analysis()
+                return
         
         elif self.simulation_data is not None:
             # Simulation mode
@@ -777,7 +807,13 @@ class SimpleMainWindow(QMainWindow):
         self.combined_signal_widget.update_signals(data, band_data)
         
         # Calculate attention score
-        attention_score = self.eeg_processor.calculate_attention_score(data)
+        # For frontal_selective mode, pass current file position for multi-channel analysis
+        start_time = self.file_position if hasattr(self, 'file_position') else 0.0
+        attention_score = self.eeg_processor.calculate_attention_score(
+            data, 
+            start_time=start_time,
+            duration=5.0  # Match the data window duration
+        )
         
         # Update score display
         self.score_label.setText(f"{attention_score:.1f}")
