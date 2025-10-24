@@ -297,23 +297,48 @@ class CombinedSignalWidget(QWidget):
 
 
 class AllChannelsEEGWidget(QWidget):
-    """Widget to display all EEG channel waveforms"""
+    """Widget to display all EEG channel waveforms with frequency band options"""
     
     def __init__(self):
         super().__init__()
-        self.init_ui()
         self.eeg_channels = []
         self.channel_axes = {}
-        self.channel_lines = {}
+        self.channel_lines = {}  # Dictionary: channel -> {signal_type: line}
         self.time_data = np.linspace(0, 5, 1250)  # 5 second window
+        
+        # Define signal colors
+        self.colors = {
+            'Original': 'black',
+            'Delta': 'purple',
+            'Theta': 'blue', 
+            'Alpha': 'green',
+            'Beta': 'orange',
+            'Gamma': 'red'
+        }
+        
+        # Default visibility settings
+        self.visible_signals = {
+            'Original': True,
+            'Delta': False,
+            'Theta': False,
+            'Alpha': False,
+            'Beta': False,
+            'Gamma': False
+        }
+        
+        self.init_ui()
         
     def init_ui(self):
         """Initialize UI"""
-        # Create scroll area
+        # Main layout
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
         
-        # Create a scrollable area
+        # Create control panel for frequency band selection
+        control_panel = self.create_control_panel()
+        layout.addWidget(control_panel)
+        
+        # Create scroll area
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)  # Width adapts to window
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -338,6 +363,79 @@ class AllChannelsEEGWidget(QWidget):
         
         layout.addWidget(self.scroll_area)
         self.setLayout(layout)
+    
+    def create_control_panel(self):
+        """Create control panel for frequency band selection"""
+        panel = QWidget()
+        layout = QHBoxLayout()
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Title label
+        title_label = QLabel("Display:")
+        title_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        layout.addWidget(title_label)
+        
+        # Add checkboxes
+        self.checkboxes = {}
+        signal_names = ['Original', 'Delta', 'Theta', 'Alpha', 'Beta', 'Gamma']
+        
+        for name in signal_names:
+            checkbox = QCheckBox(name)
+            checkbox.setChecked(self.visible_signals.get(name, False))
+            checkbox.stateChanged.connect(lambda state, n=name: self.on_checkbox_changed(n, state))
+            
+            # Set checkbox color
+            if name in self.colors:
+                checkbox.setStyleSheet(f"QCheckBox {{ color: {self.colors[name]}; font-weight: bold; }}")
+            
+            self.checkboxes[name] = checkbox
+            layout.addWidget(checkbox)
+        
+        # Add stretch space
+        layout.addStretch()
+        
+        # Add select all/deselect all buttons
+        self.select_all_btn = QPushButton("Select All")
+        self.select_all_btn.clicked.connect(self.select_all)
+        self.select_all_btn.setMaximumWidth(100)
+        layout.addWidget(self.select_all_btn)
+        
+        self.deselect_all_btn = QPushButton("Deselect All")
+        self.deselect_all_btn.clicked.connect(self.deselect_all)
+        self.deselect_all_btn.setMaximumWidth(100)
+        layout.addWidget(self.deselect_all_btn)
+        
+        panel.setLayout(layout)
+        return panel
+    
+    def on_checkbox_changed(self, signal_name, state):
+        """Checkbox state changed"""
+        self.visible_signals[signal_name] = (state == Qt.Checked)
+        self._update_line_visibility()
+    
+    def select_all(self):
+        """Select all signals"""
+        for name in self.checkboxes:
+            self.checkboxes[name].setChecked(True)
+            self.visible_signals[name] = True
+        self._update_line_visibility()
+    
+    def deselect_all(self):
+        """Deselect all signals"""
+        for name in self.checkboxes:
+            self.checkboxes[name].setChecked(False)
+            self.visible_signals[name] = False
+        self._update_line_visibility()
+    
+    def _update_line_visibility(self):
+        """Update line visibility for all channels"""
+        for channel in self.eeg_channels:
+            if channel in self.channel_lines:
+                for signal_type, line in self.channel_lines[channel].items():
+                    visible = self.visible_signals.get(signal_type, False)
+                    line.set_visible(visible)
+        
+        self.canvas.draw()
         
     def set_channels(self, channels):
         """Set the list of channels to display"""
@@ -381,11 +479,15 @@ class AllChannelsEEGWidget(QWidget):
             else:
                 ax.set_xticklabels([])
             
-            # Initialize empty line
-            line, = ax.plot([], [], 'b-', linewidth=0.8)
+            # Initialize multiple lines for each signal type
+            self.channel_lines[channel] = {}
+            for signal_type, color in self.colors.items():
+                line, = ax.plot([], [], color=color, linewidth=1.0, 
+                               alpha=0.8, label=signal_type,
+                               visible=self.visible_signals.get(signal_type, False))
+                self.channel_lines[channel][signal_type] = line
             
             self.channel_axes[channel] = ax
-            self.channel_lines[channel] = line
         
         # Adjust subplot spacing
         self.figure.subplots_adjust(hspace=0.1, left=0.1, right=0.95, top=0.98, bottom=0.05)
@@ -399,43 +501,70 @@ class AllChannelsEEGWidget(QWidget):
         # Print debug info
         print(f"Set up {len(channels)} channels, chart height: {total_height:.1f} inches ({pixel_height} pixels)")
     
-    def update_signals(self, channel_data_dict):
+    def update_signals(self, channel_data_dict, channel_band_data_dict=None):
         """
         Update signal display for all channels
         
         Args:
-            channel_data_dict: Dictionary with channel names as keys and signal data as values
+            channel_data_dict: Dictionary with channel names as keys and original signal data as values
+            channel_band_data_dict: Dictionary with channel names as keys and frequency band data dict as values
+                                   Format: {channel: {'Delta': data, 'Theta': data, ...}}
         """
         if len(self.eeg_channels) == 0:
             return
-        
-        all_data = []
         
         for channel in self.eeg_channels:
             if channel not in channel_data_dict:
                 continue
             
-            data = channel_data_dict[channel]
+            original_data = channel_data_dict[channel]
             
-            if len(data) == 0:
+            if len(original_data) == 0:
                 continue
             
             # Adjust data length
-            if len(data) > len(self.time_data):
-                data = data[:len(self.time_data)]
-            elif len(data) < len(self.time_data):
+            if len(original_data) > len(self.time_data):
+                original_data = original_data[:len(self.time_data)]
+            elif len(original_data) < len(self.time_data):
                 padded_data = np.zeros(len(self.time_data))
-                padded_data[:len(data)] = data
-                data = padded_data
+                padded_data[:len(original_data)] = original_data
+                original_data = padded_data
             
-            # Update line data
-            if channel in self.channel_lines:
-                self.channel_lines[channel].set_data(self.time_data, data)
-                all_data.extend(data)
+            # Update original signal line
+            if channel in self.channel_lines and 'Original' in self.channel_lines[channel]:
+                self.channel_lines[channel]['Original'].set_data(self.time_data, original_data)
+            
+            # Update frequency band lines if available
+            if channel_band_data_dict and channel in channel_band_data_dict:
+                band_data = channel_band_data_dict[channel]
                 
-                # Dynamically adjust Y-axis range
-                if len(data) > 0:
-                    y_min, y_max = np.min(data), np.max(data)
+                for band_name, band_signal in band_data.items():
+                    if len(band_signal) == 0:
+                        continue
+                    
+                    # Adjust band data length
+                    if len(band_signal) > len(self.time_data):
+                        band_signal = band_signal[:len(self.time_data)]
+                    elif len(band_signal) < len(self.time_data):
+                        padded_data = np.zeros(len(self.time_data))
+                        padded_data[:len(band_signal)] = band_signal
+                        band_signal = padded_data
+                    
+                    # Update band line
+                    if band_name in self.channel_lines[channel]:
+                        self.channel_lines[channel][band_name].set_data(self.time_data, band_signal)
+            
+            # Dynamically adjust Y-axis range based on visible lines
+            if channel in self.channel_lines:
+                all_visible_data = []
+                for signal_type, line in self.channel_lines[channel].items():
+                    if line.get_visible():
+                        x_data, y_data = line.get_data()
+                        if len(y_data) > 0:
+                            all_visible_data.extend(y_data)
+                
+                if all_visible_data:
+                    y_min, y_max = min(all_visible_data), max(all_visible_data)
                     margin = (y_max - y_min) * 0.1 + 10  # Add 10uV base margin
                     self.channel_axes[channel].set_ylim(y_min - margin, y_max + margin)
         
@@ -444,8 +573,10 @@ class AllChannelsEEGWidget(QWidget):
     
     def clear_signals(self):
         """Clear all signal displays"""
-        for line in self.channel_lines.values():
-            line.set_data([], [])
+        for channel in self.eeg_channels:
+            if channel in self.channel_lines:
+                for line in self.channel_lines[channel].values():
+                    line.set_data([], [])
         
         for ax in self.channel_axes.values():
             ax.set_ylim(-200, 200)
@@ -655,7 +786,7 @@ class SimpleMainWindow(QMainWindow):
         self.channel_list_text.setPlaceholderText("No EEG channels loaded...")
         channel_layout.addWidget(self.channel_list_text)
         
-        channel_info = QLabel("All EEG channels are automatically used for analysis\nWaveform shows averaged signal")
+        channel_info = QLabel("All EEG channels are automatically used for analysis\nEach channel can display original signal and frequency bands")
         channel_info.setWordWrap(True)
         channel_info.setStyleSheet("color: #666; font-size: 11px;")
         channel_layout.addWidget(channel_info)
@@ -1027,8 +1158,16 @@ class SimpleMainWindow(QMainWindow):
         if len(channel_data_dict) == 0:
             return
         
-        # Update EEG signal display for all channels
-        self.all_channels_widget.update_signals(channel_data_dict)
+        # Extract frequency bands for each channel
+        channel_band_data_dict = {}
+        for channel, original_data in channel_data_dict.items():
+            if len(original_data) > 0:
+                # Extract frequency bands from original signal
+                band_data = self.eeg_processor.extract_frequency_bands(original_data)
+                channel_band_data_dict[channel] = band_data
+        
+        # Update EEG signal display for all channels (with frequency bands)
+        self.all_channels_widget.update_signals(channel_data_dict, channel_band_data_dict)
         
         # Calculate attention score
         # Now automatically processes all EEG electrode channels
