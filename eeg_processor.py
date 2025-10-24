@@ -7,8 +7,6 @@ import numpy as np
 import mne
 from scipy import signal
 from scipy.fft import fft, fftfreq
-import threading
-import time
 from typing import Optional, Tuple, Dict, List
 
 
@@ -26,8 +24,6 @@ class EEGProcessor:
         self.raw_data = None
         self.current_data = None
         self.channels = None
-        self.is_running = False
-        self.simulation_thread = None
         
         # Frequency band definitions (Hz)
         self.frequency_bands = {
@@ -41,7 +37,7 @@ class EEGProcessor:
         # Attention scoring weights (based on neuroscience research)
         self.attention_weights = {
             'Beta': 0.6,      # Beta waves positively correlated with attention focus
-            'Alpha': -0.2,    # Alpha waves related to relaxation state, high Alpha may indicate lack of attention
+            'Alpha': -0.5,    # Alpha waves related to relaxation state, high Alpha may indicate lack of attention
             'Theta': -0.3,    # Theta waves related to drowsiness and meditation state
             'Delta': -0.1,    # Delta waves related to deep sleep
             'Gamma': 0.2      # Gamma waves related to higher cognitive functions
@@ -51,7 +47,6 @@ class EEGProcessor:
         # 'relative': Relative power method
         # 'log': Logarithmic power method
         # 'ratio': Beta/Theta ratio method
-        # 'combined': Combined method
         # 'frontal_selective': Frontal Beta + Non-frontal Alpha method (based on selective attention physiology)
         self.attention_mode = 'relative'
         
@@ -61,10 +56,23 @@ class EEGProcessor:
         # Non-frontal regions (task-irrelevant): Alpha increase indicates selective inhibition
         # Converge to parietal-occipital sites for selective inhibition robustness
         self.non_frontal_channels = ['P3', 'P4', 'Pz', 'O1', 'O2']
+        
+        # Preprocessing parameters
+        self.preprocess_enabled = True  # Enable preprocessing by default
+        self.resample_enabled = True  # Enable resampling to target sample rate
+        self.bandpass_enabled = True  # Enable bandpass filter
+        self.notch_enabled = True  # Enable notch filter
+        self.baseline_enabled = True  # Enable baseline drift removal
+        self.reref_enabled = True  # Enable re-referencing
+        self.artifact_enabled = True  # Enable artifact detection and handling
+        self.bandpass_freq = (0.5, 100)  # Bandpass filter frequency range
+        self.notch_freqs = [50, 60]  # Notch filter frequencies (power line interference)
+        self.artifact_threshold = 150  # Artifact detection threshold (μV)
+        self.bad_channels = []  # List to store bad channels detected
     
     def load_edf_file(self, file_path: str) -> bool:
         """
-        Load EEG file in EDF format
+        Load EEG file in EDF format with preprocessing
         
         Args:
             file_path: Path to EDF file
@@ -78,9 +86,20 @@ class EEGProcessor:
             self.raw_data = raw
             self.channels = raw.ch_names
             
-            # Resample to target sampling rate
-            if raw.info['sfreq'] != self.sample_rate:
+            original_sfreq = raw.info['sfreq']
+            print(f"Original sampling rate: {original_sfreq}Hz")
+            
+            # Resample to target sampling rate (if enabled)
+            if self.resample_enabled and original_sfreq != self.sample_rate:
+                print(f"Resampling from {original_sfreq}Hz to {self.sample_rate}Hz...")
                 raw.resample(self.sample_rate, npad="auto")
+                print(f"Resampling completed")
+            elif not self.resample_enabled:
+                print(f"Resampling disabled, keeping original rate: {original_sfreq}Hz")
+                # Update sample_rate to match the actual data
+                self.sample_rate = int(original_sfreq)
+            else:
+                print(f"Sample rate already matches target: {self.sample_rate}Hz")
             
             # Get data matrix (channels x times)
             data = raw.get_data()
@@ -88,7 +107,6 @@ class EEGProcessor:
             # Check data units and convert to microvolts
             # EDF files are typically in volts, need to convert to microvolts (multiply by 1e6)
             data_uv = self.convert_to_microvolts(data, raw)
-            self.current_data = data_uv
             
             print(f"Successfully loaded EDF file: {file_path}")
             print(f"Number of channels: {len(self.channels)}")
@@ -96,12 +114,27 @@ class EEGProcessor:
             print(f"Sampling rate: {self.sample_rate}Hz")
             print(f"Data units converted to microvolts (μV)")
             
-            # Display data range information
+            # Display data range information before preprocessing
             if len(data_uv) > 0:
                 sample_data = data_uv[0, :]  # First channel as sample
-                print(f"Sample data range: {np.min(sample_data):.2f} to {np.max(sample_data):.2f} μV")
-                print(f"Sample data mean: {np.mean(sample_data):.2f} μV")
-                print(f"Sample data std dev: {np.std(sample_data):.2f} μV")
+                print(f"Before preprocessing - Sample data range: {np.min(sample_data):.2f} to {np.max(sample_data):.2f} μV")
+                print(f"Before preprocessing - Sample data mean: {np.mean(sample_data):.2f} μV")
+                print(f"Before preprocessing - Sample data std dev: {np.std(sample_data):.2f} μV")
+            
+            # Apply preprocessing if enabled
+            if self.preprocess_enabled:
+                print("\n=== Starting EEG Preprocessing ===")
+                data_uv = self.preprocess_eeg_data(data_uv)
+                print("=== Preprocessing Complete ===\n")
+                
+                # Display data range information after preprocessing
+                if len(data_uv) > 0:
+                    sample_data = data_uv[0, :]  # First channel as sample
+                    print(f"After preprocessing - Sample data range: {np.min(sample_data):.2f} to {np.max(sample_data):.2f} μV")
+                    print(f"After preprocessing - Sample data mean: {np.mean(sample_data):.2f} μV")
+                    print(f"After preprocessing - Sample data std dev: {np.std(sample_data):.2f} μV")
+            
+            self.current_data = data_uv
             
             return True
             
@@ -143,6 +176,223 @@ class EEGProcessor:
             print(f"Unit conversion failed: {e}")
             print(f"Using raw data, may affect display")
             return data
+    
+    def preprocess_eeg_data(self, data: np.ndarray) -> np.ndarray:
+        """
+        Comprehensive EEG data preprocessing pipeline
+        
+        Steps (conditionally applied based on settings):
+        1. Bandpass filtering (0.5-100 Hz)
+        2. Notch filtering (50Hz and 60Hz power line interference)
+        3. Baseline drift removal
+        4. Re-referencing (average reference)
+        5. Artifact detection and handling
+        
+        Args:
+            data: Input data (channels x samples) in microvolts
+            
+        Returns:
+            np.ndarray: Preprocessed data
+        """
+        step_num = 1
+        
+        if self.bandpass_enabled:
+            print(f"{step_num}. Applying bandpass filter: {self.bandpass_freq[0]}-{self.bandpass_freq[1]} Hz...")
+            data = self.apply_bandpass_filter(data, self.bandpass_freq[0], self.bandpass_freq[1])
+            step_num += 1
+        else:
+            print(f"{step_num}. Bandpass filter: Skipped")
+            step_num += 1
+        
+        if self.notch_enabled:
+            print(f"{step_num}. Applying notch filters at {self.notch_freqs} Hz (power line interference)...")
+            for freq in self.notch_freqs:
+                data = self.apply_notch_filter(data, freq)
+            step_num += 1
+        else:
+            print(f"{step_num}. Notch filter: Skipped")
+            step_num += 1
+        
+        if self.baseline_enabled:
+            print(f"{step_num}. Removing baseline drift...")
+            data = self.remove_baseline_drift(data)
+            step_num += 1
+        else:
+            print(f"{step_num}. Baseline drift removal: Skipped")
+            step_num += 1
+        
+        if self.reref_enabled:
+            print(f"{step_num}. Applying average re-reference...")
+            data = self.apply_average_reference(data)
+            step_num += 1
+        else:
+            print(f"{step_num}. Re-reference: Skipped")
+            step_num += 1
+        
+        if self.artifact_enabled:
+            print(f"{step_num}. Detecting and handling artifacts...")
+            data, n_artifacts = self.detect_and_handle_artifacts(data)
+            print(f"   Detected and interpolated {n_artifacts} artifact segments")
+        else:
+            print(f"{step_num}. Artifact detection: Skipped")
+        
+        return data
+    
+    def apply_bandpass_filter(self, data: np.ndarray, low_freq: float, high_freq: float) -> np.ndarray:
+        """
+        Apply bandpass filter to all channels
+        
+        Args:
+            data: Input data (channels x samples)
+            low_freq: Low frequency cutoff (Hz)
+            high_freq: High frequency cutoff (Hz)
+            
+        Returns:
+            np.ndarray: Filtered data
+        """
+        filtered_data = np.zeros_like(data)
+        nyquist = self.sample_rate / 2
+        low = low_freq / nyquist
+        high = high_freq / nyquist
+        
+        # Design Butterworth bandpass filter
+        b, a = signal.butter(4, [low, high], btype='band')
+        
+        for i in range(data.shape[0]):
+            filtered_data[i, :] = signal.filtfilt(b, a, data[i, :])
+        
+        return filtered_data
+    
+    def apply_notch_filter(self, data: np.ndarray, notch_freq: float, quality_factor: float = 30.0) -> np.ndarray:
+        """
+        Apply notch filter to remove power line interference
+        
+        Args:
+            data: Input data (channels x samples)
+            notch_freq: Frequency to notch out (Hz)
+            quality_factor: Quality factor (higher = narrower notch)
+            
+        Returns:
+            np.ndarray: Filtered data
+        """
+        filtered_data = np.zeros_like(data)
+        
+        # Design notch filter
+        b, a = signal.iirnotch(notch_freq, quality_factor, self.sample_rate)
+        
+        for i in range(data.shape[0]):
+            filtered_data[i, :] = signal.filtfilt(b, a, data[i, :])
+        
+        return filtered_data
+    
+    def remove_baseline_drift(self, data: np.ndarray, window_size: Optional[int] = None) -> np.ndarray:
+        """
+        Remove baseline drift using high-pass filtering or detrending
+        
+        Args:
+            data: Input data (channels x samples)
+            window_size: Window size for moving average (if None, uses simple detrending)
+            
+        Returns:
+            np.ndarray: Data with baseline drift removed
+        """
+        corrected_data = np.zeros_like(data)
+        
+        for i in range(data.shape[0]):
+            # Use polynomial detrending (removes linear and polynomial trends)
+            corrected_data[i, :] = signal.detrend(data[i, :], type='linear')
+        
+        return corrected_data
+    
+    def apply_average_reference(self, data: np.ndarray) -> np.ndarray:
+        """
+        Apply average reference to EEG data
+        Re-references all channels to the average of all channels
+        
+        Args:
+            data: Input data (channels x samples)
+            
+        Returns:
+            np.ndarray: Re-referenced data
+        """
+        # Calculate average across all channels
+        avg_reference = np.mean(data, axis=0)
+        
+        # Subtract average from each channel
+        referenced_data = data - avg_reference
+        
+        return referenced_data
+    
+    def detect_and_handle_artifacts(self, data: np.ndarray) -> Tuple[np.ndarray, int]:
+        """
+        Detect and handle artifacts using amplitude threshold method
+        
+        Artifacts are detected when amplitude exceeds threshold.
+        Simple interpolation is used to handle detected artifacts.
+        
+        Args:
+            data: Input data (channels x samples)
+            
+        Returns:
+            Tuple[np.ndarray, int]: (Cleaned data, Number of artifacts detected)
+        """
+        cleaned_data = data.copy()
+        n_artifacts = 0
+        
+        for i in range(data.shape[0]):
+            channel_data = data[i, :]
+            
+            # Detect artifacts (amplitude exceeding threshold)
+            artifact_mask = np.abs(channel_data) > self.artifact_threshold
+            
+            if np.any(artifact_mask):
+                # Count artifacts
+                n_artifacts += np.sum(artifact_mask)
+                
+                # Simple interpolation: replace artifact points with interpolated values
+                artifact_indices = np.where(artifact_mask)[0]
+                good_indices = np.where(~artifact_mask)[0]
+                
+                if len(good_indices) > 1:
+                    # Interpolate using good data points
+                    cleaned_data[i, artifact_indices] = np.interp(
+                        artifact_indices, 
+                        good_indices, 
+                        channel_data[good_indices]
+                    )
+        
+        return cleaned_data, n_artifacts
+    
+    def set_preprocessing_params(self, 
+                                   enabled: bool = True,
+                                   bandpass_freq: Optional[Tuple[float, float]] = None,
+                                   notch_freqs: Optional[List[float]] = None,
+                                   artifact_threshold: Optional[float] = None):
+        """
+        Set preprocessing parameters
+        
+        Args:
+            enabled: Enable/disable preprocessing
+            bandpass_freq: Bandpass filter frequency range (low, high) in Hz
+            notch_freqs: List of notch filter frequencies in Hz
+            artifact_threshold: Artifact detection threshold in μV
+        """
+        self.preprocess_enabled = enabled
+        
+        if bandpass_freq is not None:
+            self.bandpass_freq = bandpass_freq
+            
+        if notch_freqs is not None:
+            self.notch_freqs = notch_freqs
+            
+        if artifact_threshold is not None:
+            self.artifact_threshold = artifact_threshold
+        
+        print(f"Preprocessing parameters updated:")
+        print(f"  Enabled: {self.preprocess_enabled}")
+        print(f"  Bandpass: {self.bandpass_freq} Hz")
+        print(f"  Notch filters: {self.notch_freqs} Hz")
+        print(f"  Artifact threshold: {self.artifact_threshold} μV")
     
     def get_channel_data(self, channel_name: str, start_time: float = 0, duration: float = 2) -> np.ndarray:
         """
@@ -249,12 +499,12 @@ class EEGProcessor:
         Set attention score calculation mode
         
         Args:
-            mode: Calculation mode - 'relative', 'log', 'ratio', 'combined', or 'frontal_selective'
+            mode: Calculation mode - 'relative', 'log', 'ratio', or 'frontal_selective'
         
         Returns:
             bool: True if successfully set, False if invalid mode
         """
-        valid_modes = ['relative', 'log', 'ratio', 'combined', 'frontal_selective']
+        valid_modes = ['relative', 'log', 'ratio', 'frontal_selective']
         if mode not in valid_modes:
             print(f"Error: Invalid mode '{mode}'. Valid modes: {valid_modes}")
             return False
@@ -267,190 +517,243 @@ class EEGProcessor:
         """Get current attention calculation mode"""
         return self.attention_mode
     
-    def calculate_attention_score(self, data: np.ndarray, channel_name: Optional[str] = None, 
-                                  start_time: Optional[float] = None, duration: float = 2.0) -> float:
+    def calculate_attention_score(self, start_time: float = 0, duration: float = 2.0) -> float:
         """
         Calculate attention score using selected mode
+        Automatically processes all EEG electrode channels
         
         Modes:
         - 'relative': Relative power method (original)
         - 'log': Logarithmic power method
         - 'ratio': Beta/Theta ratio method (classic neuroscience indicator)
-        - 'combined': Combined method using all approaches
         - 'frontal_selective': Frontal Beta + Non-frontal Alpha (selective attention physiology)
         
         Args:
-            data: Input signal (single channel for most modes, or all channels for frontal_selective)
-            channel_name: Channel name (required for frontal_selective mode)
-            start_time: Start time for analysis (required for frontal_selective mode in file playback)
-            duration: Duration for analysis (default 2.0 seconds)
+            start_time: Start time for analysis (seconds)
+            duration: Duration for analysis (seconds, default 2.0)
             
         Returns:
             float: Attention score (0-100)
         """
-        if len(data) == 0:
+        if self.current_data is None:
             return 0.0
-        
-        # For frontal_selective mode, use multi-channel analysis
-        if self.attention_mode == 'frontal_selective':
-            # Use provided start_time if available, otherwise use 0
-            if start_time is None:
-                start_time = 0.0
-            return self._calculate_score_frontal_selective(start_time=start_time, duration=duration)
-        
-        # Calculate power of each frequency band for single channel
-        band_powers = {}
-        for band_name in self.frequency_bands.keys():
-            power = self.calculate_band_power(data, band_name)
-            band_powers[band_name] = power
         
         # Select calculation method based on mode
         if self.attention_mode == 'relative':
-            return self._calculate_score_relative(band_powers)
+            return self._calculate_score_relative(start_time=start_time, duration=duration)
         elif self.attention_mode == 'log':
-            return self._calculate_score_log(band_powers)
+            return self._calculate_score_log(start_time=start_time, duration=duration)
         elif self.attention_mode == 'ratio':
-            return self._calculate_score_ratio(band_powers)
-        elif self.attention_mode == 'combined':
-            return self._calculate_score_combined(band_powers)
+            return self._calculate_score_ratio(start_time=start_time, duration=duration)
+        elif self.attention_mode == 'frontal_selective':
+            return self._calculate_score_frontal_selective(start_time=start_time, duration=duration)
         else:
-            return self._calculate_score_relative(band_powers)
+            return self._calculate_score_relative(start_time=start_time, duration=duration)
     
-    def _calculate_score_relative(self, band_powers: Dict[str, float]) -> float:
+    def _calculate_score_relative(self, start_time: float = 0, duration: float = 2.0) -> float:
         """
         Method 1: Relative power method
         Uses relative power ratios weighted by attention weights
+        Processes all EEG electrode channels
+        
+        Args:
+            start_time: Start time for analysis (seconds)
+            duration: Duration for analysis (seconds)
+            
+        Returns:
+            float: Attention score (0-100)
         """
-        total_power = sum(band_powers.values())
-        if total_power == 0:
+        if self.current_data is None or self.channels is None:
             return 0.0
         
-        # Calculate weighted attention score
-        attention_score = 0.0
-        for band_name, power in band_powers.items():
-            relative_power = power / total_power
-            weighted_score = relative_power * self.attention_weights[band_name]
-            attention_score += weighted_score
+        epsilon = 1e-10
+        all_channel_scores = []
+        
+        # Iterate through all EEG channels
+        for channel in self.channels:
+            # Filter for EEG channels only
+            if 'EEG' not in channel.upper():
+                continue
+            
+            channel_data = self.get_channel_data(channel, start_time, duration)
+            
+            if len(channel_data) == 0:
+                continue
+            
+            # Calculate band powers for this channel
+            band_powers = {}
+            for band_name in self.frequency_bands.keys():
+                power = self.calculate_band_power(channel_data, band_name)
+                band_powers[band_name] = power
+            
+            total_power = sum(band_powers.values())
+            if total_power == 0:
+                continue
+            
+            # Calculate weighted attention score for this channel
+            attention_score = 0.0
+            for band_name, power in band_powers.items():
+                relative_power = power / total_power
+                weighted_score = relative_power * self.attention_weights[band_name]
+                attention_score += weighted_score
+            
+            all_channel_scores.append(attention_score)
+        
+        # Check if we have valid scores
+        if len(all_channel_scores) == 0:
+            return 0.0
+        
+        # Average scores across all EEG channels
+        avg_attention_score = np.mean(all_channel_scores)
         
         # Map to 0-100 range
-        # Dynamically calculate theoretical range based on current weights
-        # Min score: when all power is in the most negative weight band
-        # Max score: when all power is in the most positive weight band
         min_possible_score = min(self.attention_weights.values())
         max_possible_score = max(self.attention_weights.values())
         score_range = max_possible_score - min_possible_score
         
         # Linear mapping to [0, 1]
         if score_range > 0:
-            normalized_score = (attention_score - min_possible_score) / score_range
+            normalized_score = (avg_attention_score - min_possible_score) / score_range
         else:
-            normalized_score = 0.5  # Fallback if all weights are equal
+            normalized_score = 0.5
         
         score_0_100 = normalized_score * 100
-        
-        # Ensure score is within reasonable range
         score_0_100 = max(0, min(100, score_0_100))
         
         return score_0_100
     
-    def _calculate_score_log(self, band_powers: Dict[str, float]) -> float:
+    def _calculate_score_log(self, start_time: float = 0, duration: float = 2.0) -> float:
         """
         Method 2: Logarithmic power method
         Uses log-transformed absolute power to preserve intensity information
+        Processes all EEG electrode channels
+        
+        Args:
+            start_time: Start time for analysis (seconds)
+            duration: Duration for analysis (seconds)
+            
+        Returns:
+            float: Attention score (0-100)
         """
+        if self.current_data is None or self.channels is None:
+            return 0.0
+        
         epsilon = 1e-10
+        all_channel_scores = []
         
-        # Calculate log-weighted score
-        log_score = 0.0
-        log_powers = {}
+        # Iterate through all EEG channels
+        for channel in self.channels:
+            # Filter for EEG channels only
+            if 'EEG' not in channel.upper():
+                continue
+            
+            channel_data = self.get_channel_data(channel, start_time, duration)
+            
+            if len(channel_data) == 0:
+                continue
+            
+            # Calculate band powers for this channel
+            band_powers = {}
+            for band_name in self.frequency_bands.keys():
+                power = self.calculate_band_power(channel_data, band_name)
+                band_powers[band_name] = power
+            
+            # Calculate log-weighted score for this channel
+            log_score = 0.0
+            log_powers = {}
+            
+            for band_name, power in band_powers.items():
+                log_power = np.log(power + epsilon)
+                log_powers[band_name] = log_power
+                log_score += log_power * self.attention_weights[band_name]
+            
+            # Dynamic normalization
+            min_weight = min(self.attention_weights.values())
+            max_weight = max(self.attention_weights.values())
+            
+            min_possible_score = min([log_power * min_weight for log_power in log_powers.values()])
+            max_possible_score = max([log_power * max_weight for log_power in log_powers.values()])
+            
+            score_range = max_possible_score - min_possible_score
+            
+            # Linear mapping to [0, 1]
+            if score_range > 1e-6:
+                normalized_score = (log_score - min_possible_score) / score_range
+            else:
+                normalized_score = 1 / (1 + np.exp(-1.5 * log_score))
+            
+            all_channel_scores.append(normalized_score)
         
-        for band_name, power in band_powers.items():
-            log_power = np.log(power + epsilon)
-            log_powers[band_name] = log_power
-            log_score += log_power * self.attention_weights[band_name]
+        # Check if we have valid scores
+        if len(all_channel_scores) == 0:
+            return 0.0
         
-        # Dynamic normalization based on actual log power values
-        # Calculate theoretical min/max based on actual band powers
-        # Worst case: 100% power in band with most negative weight
-        # Best case: 100% power in band with most positive weight
-        
-        min_weight = min(self.attention_weights.values())
-        max_weight = max(self.attention_weights.values())
-        
-        # Calculate what scores would be if all power was in min or max weight band
-        # Using actual log power values from each band
-        min_possible_score = min([log_power * min_weight for log_power in log_powers.values()])
-        max_possible_score = max([log_power * max_weight for log_power in log_powers.values()])
-        
-        # Expand range slightly to account for weighted combinations
-        score_range = max_possible_score - min_possible_score
-        
-        # Linear mapping to [0, 1]
-        if score_range > 1e-6:
-            # Normalize based on distance from minimum
-            normalized_score = (log_score - min_possible_score) / score_range
-        else:
-            # Fallback: use sigmoid with adjusted parameters for very uniform cases
-            # Center around 0, moderate slope
-            normalized_score = 1 / (1 + np.exp(-1.5 * log_score))
-        
-        score_0_100 = normalized_score * 100
-        
-        # Ensure score is within reasonable range
+        # Average scores across all EEG channels
+        avg_normalized_score = np.mean(all_channel_scores)
+        score_0_100 = avg_normalized_score * 100
         score_0_100 = max(0, min(100, score_0_100))
         
         return score_0_100
     
-    def _calculate_score_ratio(self, band_powers: Dict[str, float]) -> float:
+    def _calculate_score_ratio(self, start_time: float = 0, duration: float = 2.0) -> float:
         """
         Method 3: Beta/Theta ratio method
         Classic neuroscience attention indicator
         High Beta/Theta ratio indicates high attention
+        Processes all EEG electrode channels
+        
+        Args:
+            start_time: Start time for analysis (seconds)
+            duration: Duration for analysis (seconds)
+            
+        Returns:
+            float: Attention score (0-100)
         """
+        if self.current_data is None or self.channels is None:
+            return 0.0
+        
         epsilon = 1e-10
+        all_channel_scores = []
         
-        # Calculate Beta/(Alpha + Theta) ratio - common attention metric
-        beta_power = band_powers['Beta']
-        alpha_power = band_powers['Alpha']
-        theta_power = band_powers['Theta']
+        # Iterate through all EEG channels
+        for channel in self.channels:
+            # Filter for EEG channels only
+            if 'EEG' not in channel.upper():
+                continue
+            
+            channel_data = self.get_channel_data(channel, start_time, duration)
+            
+            if len(channel_data) == 0:
+                continue
+            
+            # Calculate band powers for this channel
+            beta_power = self.calculate_band_power(channel_data, 'Beta')
+            alpha_power = self.calculate_band_power(channel_data, 'Alpha')
+            theta_power = self.calculate_band_power(channel_data, 'Theta')
+            
+            # Calculate Beta/(Alpha + Theta) ratio
+            ratio = beta_power / (alpha_power + theta_power + epsilon)
+            
+            # Also consider Beta/Theta ratio
+            beta_theta_ratio = beta_power / (theta_power + epsilon)
+            
+            # Combine ratios with log transformation
+            combined_ratio = np.log(ratio + epsilon) + 0.5 * np.log(beta_theta_ratio + epsilon)
+            
+            # Map to 0-100 using sigmoid
+            score = 100 / (1 + np.exp(-0.8 * combined_ratio))
+            all_channel_scores.append(score)
         
-        # Main ratio: Beta / (Alpha + Theta)
-        ratio = beta_power / (alpha_power + theta_power + epsilon)
+        # Check if we have valid scores
+        if len(all_channel_scores) == 0:
+            return 0.0
         
-        # Also consider Beta/Theta ratio
-        beta_theta_ratio = beta_power / (theta_power + epsilon)
-        
-        # Combine ratios with log transformation
-        combined_ratio = np.log(ratio + epsilon) + 0.5 * np.log(beta_theta_ratio + epsilon)
-        
-        # Map to 0-100 using sigmoid
-        # Adjusted for typical ratio ranges
-        score_0_100 = 100 / (1 + np.exp(-0.8 * combined_ratio))
+        # Average scores across all EEG channels
+        score_0_100 = np.mean(all_channel_scores)
+        score_0_100 = max(0, min(100, score_0_100))
         
         return score_0_100
     
-    def _calculate_score_combined(self, band_powers: Dict[str, float]) -> float:
-        """
-        Method 4: Combined method
-        Integrates all three approaches for robust scoring
-        """
-        # Get scores from all methods
-        score_relative = self._calculate_score_relative(band_powers)
-        score_log = self._calculate_score_log(band_powers)
-        score_ratio = self._calculate_score_ratio(band_powers)
-        
-        # Weighted combination
-        # Relative: 40%, Log: 30%, Ratio: 30%
-        combined_score = (
-            0.4 * score_relative +
-            0.3 * score_log +
-            0.3 * score_ratio
-        )
-        
-        # Ensure score is within range
-        combined_score = max(0, min(100, combined_score))
-        
-        return combined_score
     
     def _calculate_score_frontal_selective(self, start_time: float = 0, duration: float = 2) -> float:
         """
@@ -471,182 +774,70 @@ class EEGProcessor:
         
         epsilon = 1e-10
         
-        # Helper: robust z-score using median and MAD
-        def robust_z(values: np.ndarray) -> np.ndarray:
-            if len(values) == 0:
-                return np.array([])
-            med = np.median(values)
-            mad = np.median(np.abs(values - med))
-            scale = (mad * 1.4826) + 1e-12
-            return (values - med) / scale
+        # Collect relative power from frontal, non-frontal regions, and all channels
+        frontal_beta_relative = []
+        non_frontal_alpha_relative = []
+        all_beta_relative = []
+        all_alpha_relative = []
         
-        # Collect per-channel relative powers
-        frontal_beta_rel = []
-        frontal_alpha_rel = []
-        frontal_gamma_rel = []
-        post_alpha_rel = []
-        theta_rel_all = []
-        
+        # Single iteration through all channels - optimized to avoid redundant calculations
         for channel in self.channels:
             clean_name = channel.replace('EEG ', '').strip()
             channel_data = self.get_channel_data(channel, start_time, duration)
+            
             if len(channel_data) == 0:
                 continue
-            # Band powers
-            delta_p = self.calculate_band_power(channel_data, 'Delta')
-            theta_p = self.calculate_band_power(channel_data, 'Theta')
-            alpha_p = self.calculate_band_power(channel_data, 'Alpha')
-            beta_p = self.calculate_band_power(channel_data, 'Beta')
-            gamma_p = self.calculate_band_power(channel_data, 'Gamma')
-            total_p = max(delta_p + theta_p + alpha_p + beta_p + gamma_p, epsilon)
-            # Relative powers
-            delta_rel = delta_p / total_p
-            theta_rel = theta_p / total_p
-            alpha_rel = alpha_p / total_p
-            beta_rel = beta_p / total_p
-            gamma_rel = gamma_p / total_p
-            theta_rel_all.append(theta_rel)
+            
+            # Calculate all band powers once for this channel
+            delta_power = self.calculate_band_power(channel_data, 'Delta')
+            theta_power = self.calculate_band_power(channel_data, 'Theta')
+            alpha_power = self.calculate_band_power(channel_data, 'Alpha')
+            beta_power = self.calculate_band_power(channel_data, 'Beta')
+            gamma_power = self.calculate_band_power(channel_data, 'Gamma')
+            
+            total_power = delta_power + theta_power + alpha_power + beta_power + gamma_power + epsilon
+            
+            # Calculate relative powers
+            beta_rel = beta_power / total_power
+            alpha_rel = alpha_power / total_power
+            
+            # Collect data for all channels (for reference distribution)
+            all_beta_relative.append(beta_rel)
+            all_alpha_relative.append(alpha_rel)
+            
+            # Collect data for specific regions
             if clean_name in self.frontal_channels:
-                frontal_beta_rel.append(beta_rel)
-                frontal_alpha_rel.append(alpha_rel)
-                frontal_gamma_rel.append(gamma_rel)
+                frontal_beta_relative.append(beta_rel)
+            
             if clean_name in self.non_frontal_channels:
-                post_alpha_rel.append(alpha_rel)
+                non_frontal_alpha_relative.append(alpha_rel)
         
-        # Data sufficiency checks
-        if len(frontal_beta_rel) == 0 or len(post_alpha_rel) == 0:
+        # Data validity check
+        if len(frontal_beta_relative) == 0 or len(non_frontal_alpha_relative) == 0:
             return 0.0
         
-        # Step 1: group robust medians on raw relative powers
-        beta_frontal_med = float(np.median(frontal_beta_rel)) if len(frontal_beta_rel) > 0 else 0.0
-        alpha_frontal_med = float(np.median(frontal_alpha_rel)) if len(frontal_alpha_rel) > 0 else 0.0
-        alpha_post_med = float(np.median(post_alpha_rel)) if len(post_alpha_rel) > 0 else 0.0
-        theta_global_med = float(np.median(theta_rel_all)) if len(theta_rel_all) > 0 else 0.0
-
-        # Step 2: build global reference distributions across all channels (relative powers)
-        # Use all-channel vectors for robust z computation
-        # If some arrays are empty (unlikely for theta_rel_all), fallback to small epsilon
-        all_beta_rel = []
-        all_alpha_rel = []
-        for channel in self.channels:
-            clean_name = channel.replace('EEG ', '').strip()
-            data_ch = self.get_channel_data(channel, start_time, duration)
-            if len(data_ch) == 0:
-                continue
-            d = self.calculate_band_power(data_ch, 'Delta')
-            t = self.calculate_band_power(data_ch, 'Theta')
-            a = self.calculate_band_power(data_ch, 'Alpha')
-            b = self.calculate_band_power(data_ch, 'Beta')
-            g = self.calculate_band_power(data_ch, 'Gamma')
-            tot = max(d + t + a + b + g, epsilon)
-            all_beta_rel.append(b / tot)
-            all_alpha_rel.append(a / tot)
-        all_beta_rel = np.array(all_beta_rel) if len(all_beta_rel) > 0 else np.array([epsilon])
-        all_alpha_rel = np.array(all_alpha_rel) if len(all_alpha_rel) > 0 else np.array([epsilon])
-        all_theta_rel = np.array(theta_rel_all) if len(theta_rel_all) > 0 else np.array([epsilon])
-
-        # Step 3: compute robust z of group medians against global distributions
-        def robust_z_scalar(x: float, ref: np.ndarray) -> float:
-            med = np.median(ref)
-            mad = np.median(np.abs(ref - med))
-            scale = (mad * 1.4826) + 1e-12
-            return float((x - med) / scale)
-
-        z_beta_frontal_med = robust_z_scalar(beta_frontal_med, all_beta_rel)
-        z_alpha_frontal_med = robust_z_scalar(alpha_frontal_med, all_alpha_rel)
-        z_alpha_post_med = robust_z_scalar(alpha_post_med, all_alpha_rel)  # 与同一Alpha参考对比
-        z_theta_global_med = robust_z_scalar(theta_global_med, all_theta_rel)
+        # Calculate mean and std for z-score normalization
+        beta_mean = np.mean(all_beta_relative)
+        beta_std = np.std(all_beta_relative) + epsilon
+        alpha_mean = np.mean(all_alpha_relative)
+        alpha_std = np.std(all_alpha_relative) + epsilon
         
-        # Selective inhibition: posterior alpha high minus frontal alpha contribution
-        selective_alpha = z_alpha_post_med - 0.5 * z_alpha_frontal_med
+        # Calculate average relative power for target regions
+        avg_frontal_beta_rel = np.mean(frontal_beta_relative)
+        avg_non_frontal_alpha_rel = np.mean(non_frontal_alpha_relative)
         
-        # Light artifact guard: penalize high frontal gamma (EMG)
-        frontal_gamma_rel_med = float(np.median(frontal_gamma_rel)) if len(frontal_gamma_rel) > 0 else 0.0
-        # Penalty ramps from 1.0 (<=0.15) down to 0.5 (>=0.35)
-        if frontal_gamma_rel_med <= 0.15:
-            emg_penalty = 1.0
-        elif frontal_gamma_rel_med >= 0.35:
-            emg_penalty = 0.5
-        else:
-            ratio = (frontal_gamma_rel_med - 0.15) / (0.35 - 0.15)
-            emg_penalty = 1.0 - 0.5 * ratio
+        # Z-score normalization: measures how much above/below average
+        # Positive z-score = higher than average (good for attention indicators)
+        beta_z_score = (avg_frontal_beta_rel - beta_mean) / beta_std
+        alpha_z_score = (avg_non_frontal_alpha_rel - alpha_mean) / alpha_std
         
-        # Combine indicators
-        raw_score = 0.7 * emg_penalty * z_beta_frontal_med + 0.3 * selective_alpha - 0.4 * z_theta_global_med
+        # Combined score: 70% frontal Beta z-score + 30% non-frontal Alpha z-score
+        # Z-scores typically range from -3 to +3, centered at 0
+        raw_score = 0.7 * beta_z_score + 0.3 * alpha_z_score
         
-        # Map to 0-100 using sigmoid centered at 0
-        slope = 1.5
-        score_0_100 = 100.0 / (1.0 + np.exp(-slope * raw_score))
+        # Map to 0-100 range using Sigmoid function
+        # Slope of 1.5: z-score of ±2 maps to ~95% and ~5%
+        score_0_100 = 100.0 / (1.0 + np.exp(-1.5 * raw_score))
         score_0_100 = max(0.0, min(100.0, float(score_0_100)))
+        
         return score_0_100
-    
-    def generate_simulated_signal(self, duration: float = 2.0) -> np.ndarray:
-        """
-        Generate simulated EEG signal
-        
-        Args:
-            duration: Signal duration (seconds)
-            
-        Returns:
-            np.ndarray: Simulated EEG signal
-        """
-        n_samples = int(duration * self.sample_rate)
-        t = np.linspace(0, duration, n_samples)
-        
-        # Generate simulated signal containing components from each frequency band
-        signal_data = np.zeros(n_samples)
-        
-        # Add sine waves from each frequency band to simulate real EEG characteristics
-        for band_name, (low_freq, high_freq) in self.frequency_bands.items():
-            # Choose random frequency within band range
-            freq = np.random.uniform(low_freq, high_freq)
-            # Random amplitude and phase
-            amplitude = np.random.uniform(0.5, 2.0)
-            phase = np.random.uniform(0, 2 * np.pi)
-            # Add to total signal
-            signal_data += amplitude * np.sin(2 * np.pi * freq * t + phase)
-        
-        # Add some noise to make signal more realistic
-        noise = np.random.normal(0, 0.5, n_samples)
-        signal_data += noise
-        
-        return signal_data
-    
-    def start_simulation(self, callback_func):
-        """
-        Start simulating real-time signal
-        
-        Args:
-            callback_func: Callback function for passing newly generated signal data
-        """
-        if self.is_running:
-            return
-        
-        self.is_running = True
-        self.simulation_thread = threading.Thread(target=self._simulation_loop, args=(callback_func,))
-        self.simulation_thread.daemon = True
-        self.simulation_thread.start()
-    
-    def stop_simulation(self):
-        """Stop simulated signal"""
-        self.is_running = False
-        if self.simulation_thread:
-            self.simulation_thread.join(timeout=1.0)
-    
-    def _simulation_loop(self, callback_func):
-        """
-        Simulation signal loop
-        
-        Args:
-            callback_func: Callback function
-        """
-        while self.is_running:
-            # Generate 5 seconds of simulated signal
-            signal_data = self.generate_simulated_signal(5.0)
-            
-            # Call callback function to pass data
-            if callback_func:
-                callback_func(signal_data)
-            
-            # Wait for a while to simulate real-time acquisition
-            time.sleep(0.1)

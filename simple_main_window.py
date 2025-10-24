@@ -8,8 +8,8 @@ import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QComboBox, 
                              QFileDialog, QGroupBox, QGridLayout, QSlider,
-                             QTextEdit, QSplitter, QCheckBox)
-from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QThread
+                             QTextEdit, QSplitter, QCheckBox, QScrollArea, QSizePolicy)
+from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QThread, QSize
 from PyQt5.QtGui import QFont, QPalette, QColor
 import matplotlib
 matplotlib.use('Qt5Agg')  # Use Qt5 backend
@@ -296,6 +296,163 @@ class CombinedSignalWidget(QWidget):
         self.canvas.draw()
 
 
+class AllChannelsEEGWidget(QWidget):
+    """Widget to display all EEG channel waveforms"""
+    
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+        self.eeg_channels = []
+        self.channel_axes = {}
+        self.channel_lines = {}
+        self.time_data = np.linspace(0, 5, 1250)  # 5 second window
+        
+    def init_ui(self):
+        """Initialize UI"""
+        # Create scroll area
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        
+        # Create a scrollable area
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)  # Width adapts to window
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # Create content widget
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout()
+        self.content_layout.setContentsMargins(5, 5, 5, 5)  # Small margins
+        self.content_layout.setSpacing(0)
+        
+        # Create matplotlib figure and canvas
+        self.figure = Figure(figsize=(12, 8))  # Initial size
+        self.canvas = FigureCanvas(self.figure)
+        
+        # Set canvas size policy: horizontal expand, vertical fixed
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        
+        self.content_layout.addWidget(self.canvas)
+        self.content_widget.setLayout(self.content_layout)
+        self.scroll_area.setWidget(self.content_widget)
+        
+        layout.addWidget(self.scroll_area)
+        self.setLayout(layout)
+        
+    def set_channels(self, channels):
+        """Set the list of channels to display"""
+        self.eeg_channels = channels
+        self.channel_axes = {}
+        self.channel_lines = {}
+        
+        # Clear old charts
+        self.figure.clear()
+        
+        if len(channels) == 0:
+            self.canvas.draw()
+            return
+        
+        # Calculate appropriate chart height (allocate certain height per channel)
+        height_per_channel = 1.5  # inches
+        total_height = max(8, len(channels) * height_per_channel)
+        
+        # Adjust figure size
+        self.figure.set_figheight(total_height)
+        
+        # Get DPI and calculate pixel height
+        dpi = self.figure.get_dpi()
+        pixel_height = int(total_height * dpi)
+        
+        # Create subplots, one per channel
+        for idx, channel in enumerate(channels):
+            ax = self.figure.add_subplot(len(channels), 1, idx + 1)
+            
+            # Clean channel name
+            clean_name = channel.replace('EEG ', '').strip()
+            
+            ax.set_ylabel(clean_name, fontsize=10, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+            ax.set_xlim(0, 5)
+            ax.set_ylim(-200, 200)
+            
+            # Show x-axis label only on the last subplot
+            if idx == len(channels) - 1:
+                ax.set_xlabel("Time (s)", fontsize=10)
+            else:
+                ax.set_xticklabels([])
+            
+            # Initialize empty line
+            line, = ax.plot([], [], 'b-', linewidth=0.8)
+            
+            self.channel_axes[channel] = ax
+            self.channel_lines[channel] = line
+        
+        # Adjust subplot spacing
+        self.figure.subplots_adjust(hspace=0.1, left=0.1, right=0.95, top=0.98, bottom=0.05)
+        
+        # Set fixed canvas height so scroll bar works properly
+        self.canvas.setFixedHeight(pixel_height)
+        
+        # Draw chart
+        self.canvas.draw()
+        
+        # Print debug info
+        print(f"Set up {len(channels)} channels, chart height: {total_height:.1f} inches ({pixel_height} pixels)")
+    
+    def update_signals(self, channel_data_dict):
+        """
+        Update signal display for all channels
+        
+        Args:
+            channel_data_dict: Dictionary with channel names as keys and signal data as values
+        """
+        if len(self.eeg_channels) == 0:
+            return
+        
+        all_data = []
+        
+        for channel in self.eeg_channels:
+            if channel not in channel_data_dict:
+                continue
+            
+            data = channel_data_dict[channel]
+            
+            if len(data) == 0:
+                continue
+            
+            # Adjust data length
+            if len(data) > len(self.time_data):
+                data = data[:len(self.time_data)]
+            elif len(data) < len(self.time_data):
+                padded_data = np.zeros(len(self.time_data))
+                padded_data[:len(data)] = data
+                data = padded_data
+            
+            # Update line data
+            if channel in self.channel_lines:
+                self.channel_lines[channel].set_data(self.time_data, data)
+                all_data.extend(data)
+                
+                # Dynamically adjust Y-axis range
+                if len(data) > 0:
+                    y_min, y_max = np.min(data), np.max(data)
+                    margin = (y_max - y_min) * 0.1 + 10  # Add 10uV base margin
+                    self.channel_axes[channel].set_ylim(y_min - margin, y_max + margin)
+        
+        # Redraw canvas
+        self.canvas.draw()
+    
+    def clear_signals(self):
+        """Clear all signal displays"""
+        for line in self.channel_lines.values():
+            line.set_data([], [])
+        
+        for ax in self.channel_axes.values():
+            ax.set_ylim(-200, 200)
+        
+        self.canvas.draw()
+
+
 class AttentionTrendWidget(QWidget):
     """Attention trend display widget"""
     
@@ -394,10 +551,9 @@ class SimpleMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.eeg_processor = EEGProcessor()
-        self.current_channel = None
         self.is_file_mode = False
         self.file_position = 0
-        self.simulation_data = None
+        self.eeg_channels = []  # Store detected EEG channels
         
         self.init_ui()
         self.setup_timer()
@@ -482,37 +638,92 @@ class SimpleMainWindow(QMainWindow):
         file_group.setLayout(file_layout)
         layout.addWidget(file_group)
         
-        # Channel selection group
-        channel_group = QGroupBox("Channel Selection")
+        # EEG channels information group
+        channel_group = QGroupBox("EEG Channels Info")
         channel_layout = QVBoxLayout()
         
-        self.channel_combo = QComboBox()
-        self.channel_combo.currentTextChanged.connect(self.on_channel_changed)
-        channel_layout.addWidget(self.channel_combo)
+        # Channel count label
+        self.channel_count_label = QLabel("Detected: 0 EEG channels")
+        self.channel_count_label.setStyleSheet("font-weight: bold; color: #2E86AB; font-size: 15px;")
+        channel_layout.addWidget(self.channel_count_label)
+        
+        # Channel list display (scrollable)
+        self.channel_list_text = QTextEdit()
+        self.channel_list_text.setReadOnly(True)
+        self.channel_list_text.setMaximumHeight(100)
+        self.channel_list_text.setStyleSheet("background-color: #F8F8F8; font-size: 15px;")
+        self.channel_list_text.setPlaceholderText("No EEG channels loaded...")
+        channel_layout.addWidget(self.channel_list_text)
+        
+        channel_info = QLabel("All EEG channels are automatically used for analysis\nWaveform shows averaged signal")
+        channel_info.setWordWrap(True)
+        channel_info.setStyleSheet("color: #666; font-size: 11px;")
+        channel_layout.addWidget(channel_info)
         
         channel_group.setLayout(channel_layout)
         layout.addWidget(channel_group)
         
-        # Signal source selection group
-        source_group = QGroupBox("Signal Source")
-        source_layout = QVBoxLayout()
+        # Preprocessing options group
+        preprocess_group = QGroupBox("Preprocessing Options")
+        preprocess_layout = QVBoxLayout()
         
-        self.file_mode_btn = QPushButton("File Mode")
-        self.file_mode_btn.clicked.connect(self.start_file_mode)
-        self.file_mode_btn.setEnabled(False)
-        source_layout.addWidget(self.file_mode_btn)
+        # Enable/disable all preprocessing
+        self.preprocess_enabled_cb = QCheckBox("Enable Preprocessing")
+        self.preprocess_enabled_cb.setChecked(True)
+        self.preprocess_enabled_cb.setStyleSheet("font-weight: bold; color: #2E86AB; font-size: 12px;")
+        self.preprocess_enabled_cb.stateChanged.connect(self.on_preprocessing_toggle)
+        preprocess_layout.addWidget(self.preprocess_enabled_cb)
         
-        self.simulation_btn = QPushButton("Simulated Signal")
-        self.simulation_btn.clicked.connect(self.toggle_simulation)
-        source_layout.addWidget(self.simulation_btn)
+        # Individual preprocessing options
+        self.bandpass_cb = QCheckBox("Bandpass Filter (0.5-100 Hz)")
+        self.bandpass_cb.setChecked(True)
+        self.bandpass_cb.setStyleSheet("font-size: 11px;")
+        preprocess_layout.addWidget(self.bandpass_cb)
+        
+        self.notch_cb = QCheckBox("Notch Filter (50/60 Hz)")
+        self.notch_cb.setChecked(True)
+        self.notch_cb.setStyleSheet("font-size: 11px;")
+        preprocess_layout.addWidget(self.notch_cb)
+        
+        self.baseline_cb = QCheckBox("Baseline Drift Removal")
+        self.baseline_cb.setChecked(True)
+        self.baseline_cb.setStyleSheet("font-size: 11px;")
+        preprocess_layout.addWidget(self.baseline_cb)
+        
+        self.reref_cb = QCheckBox("Average Re-reference")
+        self.reref_cb.setChecked(True)
+        self.reref_cb.setStyleSheet("font-size: 11px;")
+        preprocess_layout.addWidget(self.reref_cb)
+        
+        self.artifact_cb = QCheckBox("Artifact Detection & Removal")
+        self.artifact_cb.setChecked(True)
+        self.artifact_cb.setStyleSheet("font-size: 11px;")
+        preprocess_layout.addWidget(self.artifact_cb)
+        
+        preprocess_info = QLabel("Note: Changes take effect on next file load")
+        preprocess_info.setWordWrap(True)
+        preprocess_info.setStyleSheet("color: #E67E22; font-size: 10px; font-style: italic;")
+        preprocess_layout.addWidget(preprocess_info)
+        
+        preprocess_group.setLayout(preprocess_layout)
+        layout.addWidget(preprocess_group)
+        
+        # Playback control group
+        control_group = QGroupBox("Playback Control")
+        control_layout = QVBoxLayout()
+        
+        self.start_btn = QPushButton("Start Analysis")
+        self.start_btn.clicked.connect(self.start_file_mode)
+        self.start_btn.setEnabled(False)
+        control_layout.addWidget(self.start_btn)
         
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.clicked.connect(self.stop_analysis)
         self.stop_btn.setEnabled(False)
-        source_layout.addWidget(self.stop_btn)
+        control_layout.addWidget(self.stop_btn)
         
-        source_group.setLayout(source_layout)
-        layout.addWidget(source_group)
+        control_group.setLayout(control_layout)
+        layout.addWidget(control_group)
         
         # Attention score display
         score_group = QGroupBox("Attention Score")
@@ -549,7 +760,6 @@ class SimpleMainWindow(QMainWindow):
             "Relative Power",
             "Logarithmic Power",
             "Beta/Theta Ratio",
-            "Combined Method",
             "Frontal-Selective (Physiological)"
         ])
         self.mode_combo.setCurrentIndex(0)  # Default: Relative Power
@@ -603,16 +813,16 @@ class SimpleMainWindow(QMainWindow):
         # Use splitter
         splitter = QSplitter(Qt.Vertical)
         
-        # Combined signal display (original signal + frequency band signals)
-        self.combined_signal_widget = CombinedSignalWidget()
-        splitter.addWidget(self.combined_signal_widget)
+        # All channels EEG signal display (new full channel display)
+        self.all_channels_widget = AllChannelsEEGWidget()
+        splitter.addWidget(self.all_channels_widget)
         
         # Attention trend display
         self.trend_widget = AttentionTrendWidget()
         splitter.addWidget(self.trend_widget)
         
-        # Set splitter proportions
-        splitter.setSizes([400, 200])
+        # Set splitter proportions (give more space to EEG signals)
+        splitter.setSizes([600, 200])
         
         return splitter
     
@@ -632,26 +842,45 @@ class SimpleMainWindow(QMainWindow):
         )
         
         if file_path:
+            # Apply preprocessing options before loading
+            self.apply_preprocessing_options()
+            
             if self.eeg_processor.load_edf_file(file_path):
                 self.file_label.setText(f"Loaded: {file_path.split('/')[-1]}")
                 self.update_channel_list()
-                self.file_mode_btn.setEnabled(True)
+                self.start_btn.setEnabled(True)
                 self.add_info_message(f"Successfully loaded file: {file_path}")
             else:
                 self.file_label.setText("Load failed")
                 self.add_info_message(f"Failed to load file: {file_path}", "error")
     
     def update_channel_list(self):
-        """Update channel list"""
-        self.channel_combo.clear()
+        """Update channel list and display EEG channels info"""
         if self.eeg_processor.channels:
-            self.channel_combo.addItems(self.eeg_processor.channels)
-            self.current_channel = self.eeg_processor.channels[0]
-    
-    def on_channel_changed(self, channel_name):
-        """Channel selection changed"""
-        self.current_channel = channel_name
-        self.add_info_message(f"Selected channel: {channel_name}")
+            # Filter EEG channels
+            self.eeg_channels = [ch for ch in self.eeg_processor.channels if 'EEG' in ch.upper()]
+            
+            # Update count label
+            self.channel_count_label.setText(f"Detected: {len(self.eeg_channels)} EEG channels")
+            
+            # Display channel list in a formatted way
+            if self.eeg_channels:
+                # Format channels in a grid-like display (4 columns)
+                channel_display = []
+                for i in range(0, len(self.eeg_channels), 4):
+                    row = self.eeg_channels[i:i+4]
+                    # Clean channel names (remove 'EEG ' prefix if exists)
+                    clean_row = [ch.replace('EEG ', '').strip() for ch in row]
+                    channel_display.append('  '.join(f"{ch:<12}" for ch in clean_row))
+                
+                self.channel_list_text.setText('\n'.join(channel_display))
+                
+                # Set channel list for new widget
+                self.all_channels_widget.set_channels(self.eeg_channels)
+            else:
+                self.channel_list_text.setText("No EEG channels found in this file")
+                
+            self.add_info_message(f"Detected {len(self.eeg_channels)} EEG channels")
     
     def change_attention_mode(self, index):
         """Change attention calculation mode"""
@@ -659,103 +888,109 @@ class SimpleMainWindow(QMainWindow):
             0: 'relative',          # Relative Power
             1: 'log',               # Logarithmic Power
             2: 'ratio',             # Beta/Theta Ratio
-            3: 'combined',          # Combined Method
-            4: 'frontal_selective'  # Frontal-Selective (Physiological)
+            3: 'frontal_selective'  # Frontal-Selective (Physiological)
         }
         
         mode_names = {
             0: 'Relative Power',
             1: 'Logarithmic Power',
             2: 'Beta/Theta Ratio',
-            3: 'Combined Method',
-            4: 'Frontal-Selective (Physiological)'
+            3: 'Frontal-Selective (Physiological)'
         }
         
         mode = mode_map.get(index, 'relative')
         self.eeg_processor.set_attention_mode(mode)
         
-        # 在 frontal_selective 模式下禁用电极选择，因为电极是自动选择的
-        if index == 4:  # Frontal-Selective mode
-            self.channel_combo.setEnabled(False)
-            # 保存当前选择的通道
-            if not hasattr(self, '_saved_channel'):
-                self._saved_channel = self.channel_combo.currentText()
-            # 设置默认提示
-            if self.channel_combo.count() > 0:
-                self.channel_combo.setCurrentIndex(0)
-            self.add_info_message(f"Switched to {mode_names[index]} mode (auto-select electrodes)")
+        # Note: All modes now automatically process all EEG electrode channels
+        # Channel selection is only used for waveform display
+        self.add_info_message(f"Switched to {mode_names[index]} mode (auto-processes all EEG channels)")
+    
+    def on_preprocessing_toggle(self, state):
+        """Handle preprocessing enable/disable toggle"""
+        enabled = (state == Qt.Checked)
+        
+        # Enable/disable individual preprocessing checkboxes
+        self.bandpass_cb.setEnabled(enabled)
+        self.notch_cb.setEnabled(enabled)
+        self.baseline_cb.setEnabled(enabled)
+        self.reref_cb.setEnabled(enabled)
+        self.artifact_cb.setEnabled(enabled)
+        
+        if enabled:
+            self.add_info_message("Preprocessing enabled")
         else:
-            self.channel_combo.setEnabled(True)
-            # 恢复之前保存的通道选择
-            if hasattr(self, '_saved_channel') and self._saved_channel:
-                idx = self.channel_combo.findText(self._saved_channel)
-                if idx >= 0:
-                    self.channel_combo.setCurrentIndex(idx)
-            self.add_info_message(f"Switched to {mode_names[index]} mode")
+            self.add_info_message("Preprocessing disabled")
+    
+    def apply_preprocessing_options(self):
+        """Apply preprocessing options to EEG processor"""
+        # Get checkbox states
+        enabled = self.preprocess_enabled_cb.isChecked()
+        bandpass_enabled = self.bandpass_cb.isChecked()
+        notch_enabled = self.notch_cb.isChecked()
+        baseline_enabled = self.baseline_cb.isChecked()
+        reref_enabled = self.reref_cb.isChecked()
+        artifact_enabled = self.artifact_cb.isChecked()
+        
+        # Set main preprocessing flag
+        self.eeg_processor.preprocess_enabled = enabled
+        
+        # Set individual preprocessing flags
+        self.eeg_processor.bandpass_enabled = bandpass_enabled
+        self.eeg_processor.notch_enabled = notch_enabled
+        self.eeg_processor.baseline_enabled = baseline_enabled
+        self.eeg_processor.reref_enabled = reref_enabled
+        self.eeg_processor.artifact_enabled = artifact_enabled
+        
+        # Log current settings
+        all_options = []
+        
+        if enabled:
+            options = []
+            if bandpass_enabled:
+                options.append("Bandpass")
+            if notch_enabled:
+                options.append("Notch")
+            if baseline_enabled:
+                options.append("Baseline")
+            if reref_enabled:
+                options.append("Re-reference")
+            if artifact_enabled:
+                options.append("Artifact removal")
+            
+            all_options.extend(options)
+        
+        if all_options:
+            self.add_info_message(f"Processing options: {', '.join(all_options)}")
+        else:
+            self.add_info_message("All preprocessing disabled")
     
     def start_file_mode(self):
         """Start file mode"""
-        # 在 frontal_selective 模式下不需要选择单个通道
-        if not self.current_channel and self.eeg_processor.get_attention_mode() != 'frontal_selective':
-            self.add_info_message("Please select a channel first", "warning")
+        if not self.eeg_channels:
+            self.add_info_message("No EEG channels detected in file", "warning")
             return
         
         self.is_file_mode = True
         self.file_position = 0
         self.timer.start(self.update_interval)
         
-        self.file_mode_btn.setEnabled(False)
-        self.simulation_btn.setEnabled(False)
+        self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         
-        self.add_info_message("Started file mode analysis")
+        self.add_info_message(f"Started analysis (processing {len(self.eeg_channels)} EEG channels)")
     
-    def toggle_simulation(self):
-        """Toggle simulated signal"""
-        if self.simulation_btn.text() == "Simulated Signal":
-            self.start_simulation()
-        else:
-            self.stop_simulation()
-    
-    def start_simulation(self):
-        """Start simulated signal"""
-        self.eeg_processor.start_simulation(self.on_simulation_data)
-        self.simulation_btn.setText("Stop Simulation")
-        self.file_mode_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.timer.start(self.update_interval)
-        
-        self.add_info_message("Started simulated signal")
-    
-    def stop_simulation(self):
-        """Stop simulated signal"""
-        self.eeg_processor.stop_simulation()
-        self.simulation_btn.setText("Simulated Signal")
-        self.file_mode_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self.timer.stop()
-        
-        self.add_info_message("Stopped simulated signal")
-    
-    def on_simulation_data(self, data):
-        """Simulated data callback"""
-        self.simulation_data = data
     
     def stop_analysis(self):
         """Stop analysis"""
         self.timer.stop()
-        self.eeg_processor.stop_simulation()
         
         self.is_file_mode = False
-        self.simulation_data = None
         
-        self.file_mode_btn.setEnabled(True)
-        self.simulation_btn.setEnabled(True)
-        self.simulation_btn.setText("Simulated Signal")
+        self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         
         # Clear display
-        self.combined_signal_widget.clear_signals()
+        self.all_channels_widget.clear_signals()
         self.trend_widget.clear_trend()
         self.score_label.setText("0")
         self.status_label.setText("Status: Unknown")
@@ -765,14 +1000,10 @@ class SimpleMainWindow(QMainWindow):
     def update_display(self):
         """Update display"""
         if self.is_file_mode:
-            # File mode
-            data = self.eeg_processor.get_channel_data(
-                self.current_channel, 
-                self.file_position, 
-                5.0  # 5 seconds of data
-            )
+            # File mode - get data for all EEG channels
+            channel_data_dict = self.get_all_channels_data(self.file_position, 5.0)
             
-            if len(data) > 0:
+            if len(channel_data_dict) > 0:
                 # Update file position
                 self.file_position += 0.1  # Advance 0.1 seconds each time
                 
@@ -784,33 +1015,25 @@ class SimpleMainWindow(QMainWindow):
                     self.stop_analysis()
                     return
                 
-                self.process_and_display(data)
+                self.process_and_display(channel_data_dict)
             else:
                 # No data available, stop analysis
                 self.add_info_message("No data available, stopping analysis", "warning")
                 self.stop_analysis()
                 return
-        
-        elif self.simulation_data is not None:
-            # Simulation mode
-            self.process_and_display(self.simulation_data)
     
-    def process_and_display(self, data):
+    def process_and_display(self, channel_data_dict):
         """Process and display data"""
-        if len(data) == 0:
+        if len(channel_data_dict) == 0:
             return
         
-        # Extract frequency bands
-        band_data = self.eeg_processor.extract_frequency_bands(data)
-        
-        # Update combined signal display (original signal + frequency band signals)
-        self.combined_signal_widget.update_signals(data, band_data)
+        # Update EEG signal display for all channels
+        self.all_channels_widget.update_signals(channel_data_dict)
         
         # Calculate attention score
-        # For frontal_selective mode, pass current file position for multi-channel analysis
+        # Now automatically processes all EEG electrode channels
         start_time = self.file_position if hasattr(self, 'file_position') else 0.0
         attention_score = self.eeg_processor.calculate_attention_score(
-            data, 
             start_time=start_time,
             duration=5.0  # Match the data window duration
         )
@@ -849,6 +1072,29 @@ class SimpleMainWindow(QMainWindow):
         if self.timer.isActive():
             self.timer.stop()
             self.timer.start(self.update_interval)
+    
+    def get_all_channels_data(self, start_time, duration):
+        """
+        Get data for all EEG channels
+        
+        Args:
+            start_time: Start time (seconds)
+            duration: Duration (seconds)
+            
+        Returns:
+            dict: Dictionary with channel names as keys and signal data as values
+        """
+        if not self.eeg_channels or self.eeg_processor.current_data is None:
+            return {}
+        
+        # Collect data from all EEG channels
+        channel_data_dict = {}
+        for channel in self.eeg_channels:
+            data = self.eeg_processor.get_channel_data(channel, start_time, duration)
+            if len(data) > 0:
+                channel_data_dict[channel] = data
+        
+        return channel_data_dict
     
     def add_info_message(self, message, msg_type="info"):
         """Add info message"""
