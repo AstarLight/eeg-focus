@@ -55,7 +55,7 @@ class EEGProcessor:
         self.frontal_channels = ['Fp1', 'Fp2', 'F3', 'F4', 'F7', 'F8', 'Fz']
         # Non-frontal regions (task-irrelevant): Alpha increase indicates selective inhibition
         # Converge to parietal-occipital sites for selective inhibition robustness
-        self.non_frontal_channels = ['P3', 'P4', 'Pz', 'O1', 'O2']
+        self.non_frontal_channels = ['P3', 'P4', 'Pz', 'O1', 'O2', 'C3', 'C4', 'Cz', 'T3', 'T4', 'T5', 'T6']
         
         # Preprocessing parameters
         self.preprocess_enabled = True  # Enable preprocessing by default
@@ -64,10 +64,8 @@ class EEGProcessor:
         self.notch_enabled = True  # Enable notch filter
         self.baseline_enabled = True  # Enable baseline drift removal
         self.reref_enabled = True  # Enable re-referencing
-        self.artifact_enabled = True  # Enable artifact detection and handling
         self.bandpass_freq = (0.5, 100)  # Bandpass filter frequency range
         self.notch_freqs = [50, 60]  # Notch filter frequencies (power line interference)
-        self.artifact_threshold = 150  # Artifact detection threshold (μV)
         self.bad_channels = []  # List to store bad channels detected
     
     def load_edf_file(self, file_path: str) -> bool:
@@ -83,6 +81,7 @@ class EEGProcessor:
         try:
             # Load EDF file using MNE
             raw = mne.io.read_raw_edf(file_path, preload=True, verbose=False, encoding='latin1')
+            raw = raw.pick_types(eeg=True)
             self.raw_data = raw
             self.channels = raw.ch_names
             
@@ -182,11 +181,10 @@ class EEGProcessor:
         Comprehensive EEG data preprocessing pipeline
         
         Steps (conditionally applied based on settings):
-        1. Bandpass filtering (0.5-100 Hz)
-        2. Notch filtering (50Hz and 60Hz power line interference)
-        3. Baseline drift removal
-        4. Re-referencing (average reference)
-        5. Artifact detection and handling
+        1. Baseline drift removal (removes slow drifts)
+        2. Re-referencing (average reference)
+        3. Bandpass filtering (0.5-100 Hz)
+        4. Notch filtering (50Hz and 60Hz power line interference)
         
         Args:
             data: Input data (channels x samples) in microvolts
@@ -195,23 +193,6 @@ class EEGProcessor:
             np.ndarray: Preprocessed data
         """
         step_num = 1
-        
-        if self.bandpass_enabled:
-            print(f"{step_num}. Applying bandpass filter: {self.bandpass_freq[0]}-{self.bandpass_freq[1]} Hz...")
-            data = self.apply_bandpass_filter(data, self.bandpass_freq[0], self.bandpass_freq[1])
-            step_num += 1
-        else:
-            print(f"{step_num}. Bandpass filter: Skipped")
-            step_num += 1
-        
-        if self.notch_enabled:
-            print(f"{step_num}. Applying notch filters at {self.notch_freqs} Hz (power line interference)...")
-            for freq in self.notch_freqs:
-                data = self.apply_notch_filter(data, freq)
-            step_num += 1
-        else:
-            print(f"{step_num}. Notch filter: Skipped")
-            step_num += 1
         
         if self.baseline_enabled:
             print(f"{step_num}. Removing baseline drift...")
@@ -229,12 +210,22 @@ class EEGProcessor:
             print(f"{step_num}. Re-reference: Skipped")
             step_num += 1
         
-        if self.artifact_enabled:
-            print(f"{step_num}. Detecting and handling artifacts...")
-            data, n_artifacts = self.detect_and_handle_artifacts(data)
-            print(f"   Detected and interpolated {n_artifacts} artifact segments")
+        if self.bandpass_enabled:
+            print(f"{step_num}. Applying bandpass filter: {self.bandpass_freq[0]}-{self.bandpass_freq[1]} Hz...")
+            data = self.apply_bandpass_filter(data, self.bandpass_freq[0], self.bandpass_freq[1])
+            step_num += 1
         else:
-            print(f"{step_num}. Artifact detection: Skipped")
+            print(f"{step_num}. Bandpass filter: Skipped")
+            step_num += 1
+        
+        if self.notch_enabled:
+            print(f"{step_num}. Applying notch filters at {self.notch_freqs} Hz (power line interference)...")
+            for freq in self.notch_freqs:
+                data = self.apply_notch_filter(data, freq)
+            step_num += 1
+        else:
+            print(f"{step_num}. Notch filter: Skipped")
+            step_num += 1
         
         return data
     
@@ -323,51 +314,10 @@ class EEGProcessor:
         
         return referenced_data
     
-    def detect_and_handle_artifacts(self, data: np.ndarray) -> Tuple[np.ndarray, int]:
-        """
-        Detect and handle artifacts using amplitude threshold method
-        
-        Artifacts are detected when amplitude exceeds threshold.
-        Simple interpolation is used to handle detected artifacts.
-        
-        Args:
-            data: Input data (channels x samples)
-            
-        Returns:
-            Tuple[np.ndarray, int]: (Cleaned data, Number of artifacts detected)
-        """
-        cleaned_data = data.copy()
-        n_artifacts = 0
-        
-        for i in range(data.shape[0]):
-            channel_data = data[i, :]
-            
-            # Detect artifacts (amplitude exceeding threshold)
-            artifact_mask = np.abs(channel_data) > self.artifact_threshold
-            
-            if np.any(artifact_mask):
-                # Count artifacts
-                n_artifacts += np.sum(artifact_mask)
-                
-                # Simple interpolation: replace artifact points with interpolated values
-                artifact_indices = np.where(artifact_mask)[0]
-                good_indices = np.where(~artifact_mask)[0]
-                
-                if len(good_indices) > 1:
-                    # Interpolate using good data points
-                    cleaned_data[i, artifact_indices] = np.interp(
-                        artifact_indices, 
-                        good_indices, 
-                        channel_data[good_indices]
-                    )
-        
-        return cleaned_data, n_artifacts
-    
     def set_preprocessing_params(self, 
                                    enabled: bool = True,
                                    bandpass_freq: Optional[Tuple[float, float]] = None,
-                                   notch_freqs: Optional[List[float]] = None,
-                                   artifact_threshold: Optional[float] = None):
+                                   notch_freqs: Optional[List[float]] = None):
         """
         Set preprocessing parameters
         
@@ -375,7 +325,6 @@ class EEGProcessor:
             enabled: Enable/disable preprocessing
             bandpass_freq: Bandpass filter frequency range (low, high) in Hz
             notch_freqs: List of notch filter frequencies in Hz
-            artifact_threshold: Artifact detection threshold in μV
         """
         self.preprocess_enabled = enabled
         
@@ -384,15 +333,11 @@ class EEGProcessor:
             
         if notch_freqs is not None:
             self.notch_freqs = notch_freqs
-            
-        if artifact_threshold is not None:
-            self.artifact_threshold = artifact_threshold
         
         print(f"Preprocessing parameters updated:")
         print(f"  Enabled: {self.preprocess_enabled}")
         print(f"  Bandpass: {self.bandpass_freq} Hz")
         print(f"  Notch filters: {self.notch_freqs} Hz")
-        print(f"  Artifact threshold: {self.artifact_threshold} μV")
     
     def get_channel_data(self, channel_name: str, start_time: float = 0, duration: float = 2) -> np.ndarray:
         """
@@ -571,10 +516,6 @@ class EEGProcessor:
         
         # Iterate through all EEG channels
         for channel in self.channels:
-            # Filter for EEG channels only
-            if 'EEG' not in channel.upper():
-                continue
-            
             channel_data = self.get_channel_data(channel, start_time, duration)
             
             if len(channel_data) == 0:
@@ -643,10 +584,6 @@ class EEGProcessor:
         
         # Iterate through all EEG channels
         for channel in self.channels:
-            # Filter for EEG channels only
-            if 'EEG' not in channel.upper():
-                continue
-            
             channel_data = self.get_channel_data(channel, start_time, duration)
             
             if len(channel_data) == 0:
@@ -717,9 +654,6 @@ class EEGProcessor:
         
         # Iterate through all EEG channels
         for channel in self.channels:
-            # Filter for EEG channels only
-            if 'EEG' not in channel.upper():
-                continue
             
             channel_data = self.get_channel_data(channel, start_time, duration)
             

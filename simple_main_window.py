@@ -805,31 +805,26 @@ class SimpleMainWindow(QMainWindow):
         self.preprocess_enabled_cb.stateChanged.connect(self.on_preprocessing_toggle)
         preprocess_layout.addWidget(self.preprocess_enabled_cb)
         
-        # Individual preprocessing options
-        self.bandpass_cb = QCheckBox("Bandpass Filter (0.5-100 Hz)")
-        self.bandpass_cb.setChecked(True)
-        self.bandpass_cb.setStyleSheet("font-size: 11px;")
-        preprocess_layout.addWidget(self.bandpass_cb)
-        
-        self.notch_cb = QCheckBox("Notch Filter (50/60 Hz)")
-        self.notch_cb.setChecked(True)
-        self.notch_cb.setStyleSheet("font-size: 11px;")
-        preprocess_layout.addWidget(self.notch_cb)
-        
-        self.baseline_cb = QCheckBox("Baseline Drift Removal")
+        # Individual preprocessing options (ordered by execution sequence)
+        self.baseline_cb = QCheckBox("1. Baseline Drift Removal")
         self.baseline_cb.setChecked(True)
         self.baseline_cb.setStyleSheet("font-size: 11px;")
         preprocess_layout.addWidget(self.baseline_cb)
         
-        self.reref_cb = QCheckBox("Average Re-reference")
+        self.reref_cb = QCheckBox("2. Average Re-reference")
         self.reref_cb.setChecked(True)
         self.reref_cb.setStyleSheet("font-size: 11px;")
         preprocess_layout.addWidget(self.reref_cb)
         
-        self.artifact_cb = QCheckBox("Artifact Detection & Removal")
-        self.artifact_cb.setChecked(True)
-        self.artifact_cb.setStyleSheet("font-size: 11px;")
-        preprocess_layout.addWidget(self.artifact_cb)
+        self.bandpass_cb = QCheckBox("3. Bandpass Filter (0.5-100 Hz)")
+        self.bandpass_cb.setChecked(True)
+        self.bandpass_cb.setStyleSheet("font-size: 11px;")
+        preprocess_layout.addWidget(self.bandpass_cb)
+        
+        self.notch_cb = QCheckBox("4. Notch Filter (50/60 Hz)")
+        self.notch_cb.setChecked(True)
+        self.notch_cb.setStyleSheet("font-size: 11px;")
+        preprocess_layout.addWidget(self.notch_cb)
         
         preprocess_info = QLabel("Note: Changes take effect on next file load")
         preprocess_info.setWordWrap(True)
@@ -989,7 +984,7 @@ class SimpleMainWindow(QMainWindow):
         """Update channel list and display EEG channels info"""
         if self.eeg_processor.channels:
             # Filter EEG channels
-            self.eeg_channels = [ch for ch in self.eeg_processor.channels if 'EEG' in ch.upper()]
+            self.eeg_channels = [ch for ch in self.eeg_processor.channels]
             
             # Update count label
             self.channel_count_label.setText(f"Detected: {len(self.eeg_channels)} EEG channels")
@@ -1045,7 +1040,6 @@ class SimpleMainWindow(QMainWindow):
         self.notch_cb.setEnabled(enabled)
         self.baseline_cb.setEnabled(enabled)
         self.reref_cb.setEnabled(enabled)
-        self.artifact_cb.setEnabled(enabled)
         
         if enabled:
             self.add_info_message("Preprocessing enabled")
@@ -1060,7 +1054,6 @@ class SimpleMainWindow(QMainWindow):
         notch_enabled = self.notch_cb.isChecked()
         baseline_enabled = self.baseline_cb.isChecked()
         reref_enabled = self.reref_cb.isChecked()
-        artifact_enabled = self.artifact_cb.isChecked()
         
         # Set main preprocessing flag
         self.eeg_processor.preprocess_enabled = enabled
@@ -1070,23 +1063,20 @@ class SimpleMainWindow(QMainWindow):
         self.eeg_processor.notch_enabled = notch_enabled
         self.eeg_processor.baseline_enabled = baseline_enabled
         self.eeg_processor.reref_enabled = reref_enabled
-        self.eeg_processor.artifact_enabled = artifact_enabled
         
         # Log current settings
         all_options = []
         
         if enabled:
             options = []
-            if bandpass_enabled:
-                options.append("Bandpass")
-            if notch_enabled:
-                options.append("Notch")
             if baseline_enabled:
-                options.append("Baseline")
+                options.append("1.Baseline")
             if reref_enabled:
-                options.append("Re-reference")
-            if artifact_enabled:
-                options.append("Artifact removal")
+                options.append("2.Re-reference")
+            if bandpass_enabled:
+                options.append("3.Bandpass")
+            if notch_enabled:
+                options.append("4.Notch")
             
             all_options.extend(options)
         
