@@ -26,6 +26,7 @@ This is a simple demo to show how eeg refect our Attention State.
 10. ✅ **Interactive Controls** - File loading, speed adjustment, playback controls
 11. ✅ **Channel Information Panel** - Automatic detection and display of all EEG channels in the file
 
+### System GUI
 ![systen GUI](./gui.png)
 
 ## Technical Architecture
